@@ -1,0 +1,2048 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <meta name="apple-mobile-web-app-title" content="Iron Log"/>
+  <meta name="theme-color" content="#080810"/>
+  <title>Iron Log</title>
+
+  <!-- PWA Manifest inline -->
+  <link rel="manifest" href="manifest.json"/>
+
+  <!-- Apple touch icon (inline SVG as data URI) -->
+  <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='115' fill='%23080810'/%3E%3Ctext x='256' y='340' text-anchor='middle' font-size='280' font-family='Arial'%3E🏋️%3C/text%3E%3Ctext x='256' y='480' text-anchor='middle' font-size='72' font-weight='bold' font-family='Arial' fill='url(%23g)'%3EIron Log%3C/text%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0%25' y1='0%25' x2='100%25' y2='0%25'%3E%3Cstop offset='0%25' stop-color='%23f59e0b'/%3E%3Cstop offset='100%25' stop-color='%23ef4444'/%3E%3C/linearGradient%3E%3C/defs%3E%3C/svg%3E"/>
+
+  <!-- Splash screen color -->
+  <style>
+    html, body { background: #080810; margin: 0; padding: 0; }
+    #root { min-height: 100vh; }
+    /* iOS safe areas */
+    .app { padding-bottom: max(90px, env(safe-area-inset-bottom, 90px)) !important; }
+    body { padding-top: env(safe-area-inset-top, 0); }
+  </style>
+
+  <!-- React + Babel from CDN -->
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+</head>
+<body>
+  <div id="root"></div>
+
+  <!-- Storage shim using localStorage so data persists on device -->
+  <script>
+    window.storage = {
+      get: async (key) => {
+        try {
+          const val = localStorage.getItem('ironlog_' + key);
+          if (val === null) throw new Error('not found');
+          return { key, value: val };
+        } catch(e) { throw e; }
+      },
+      set: async (key, value) => {
+        localStorage.setItem('ironlog_' + key, value);
+        return { key, value };
+      },
+      delete: async (key) => {
+        localStorage.removeItem('ironlog_' + key);
+        return { key, deleted: true };
+      },
+      list: async (prefix) => {
+        const keys = Object.keys(localStorage)
+          .filter(k => k.startsWith('ironlog_' + (prefix||'')))
+          .map(k => k.replace('ironlog_',''));
+        return { keys };
+      }
+    };
+  </script>
+
+  <!-- App code -->
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+
+
+
+// ─── Big Three Config ─────────────────────────────────────────────────────────
+const BIG_THREE = {
+  "Bench Press": {
+    lift:     "Barbell Bench Press",
+    icon:     "🫁",
+    color:    "#ef4444",
+    group:    "Chest",
+    alts:     ["Dumbbell Bench Press","Chest Press Machine","Smith Machine Bench Press"],
+  },
+  "Back Squat": {
+    lift:     "Barbell Back Squat",
+    icon:     "🦵",
+    color:    "#ec4899",
+    group:    "Legs",
+    alts:     ["Hack Squat Machine","Leg Press","Smith Machine Squat"],
+  },
+  "Deadlift": {
+    lift:     "Barbell Deadlift",
+    icon:     "🔙",
+    color:    "#3b82f6",
+    group:    "Back",
+    alts:     ["Romanian Deadlift","Trap Bar Deadlift","Back Extension Machine"],
+  },
+};
+const BIG_THREE_KEYS   = Object.keys(BIG_THREE);
+const BIG_THREE_LIFTS  = BIG_THREE_KEYS.map(k => BIG_THREE[k].lift);
+
+// ─── Muscle Group Library (Big Three removed) ─────────────────────────────────
+const MUSCLE_GROUPS = {
+  Chest: { icon: "🫁", color: "#ef4444", exercises: [
+    { name: "Barbell Incline Press",       compound: true,  priority: 1, alts: ["Dumbbell Incline Press","Incline Chest Press Machine","Smith Machine Incline Press"] },
+    { name: "Dumbbell Bench Press",        compound: true,  priority: 2, alts: ["Chest Press Machine","Smith Machine Bench Press","Barbell Incline Press"] },
+    { name: "Dumbbell Incline Press",      compound: true,  priority: 3, alts: ["Barbell Incline Press","Incline Chest Press Machine","Smith Machine Incline Press"] },
+    { name: "Chest Press Machine",         compound: true,  priority: 4, alts: ["Dumbbell Bench Press","Smith Machine Bench Press","Barbell Incline Press"] },
+    { name: "Incline Chest Press Machine", compound: true,  priority: 5, alts: ["Barbell Incline Press","Dumbbell Incline Press","Smith Machine Incline Press"] },
+    { name: "Cable Crossover",             compound: false, priority: 6, alts: ["Pec Deck Machine","Dumbbell Fly","Cable Chest Fly"] },
+    { name: "Cable Chest Fly",             compound: false, priority: 7, alts: ["Pec Deck Machine","Dumbbell Fly","Cable Crossover"] },
+    { name: "Pec Deck Machine",            compound: false, priority: 8, alts: ["Cable Crossover","Cable Chest Fly","Dumbbell Fly"] },
+    { name: "Dumbbell Fly",                compound: false, priority: 9, alts: ["Pec Deck Machine","Cable Chest Fly","Cable Crossover"] },
+    { name: "Dumbbell Incline Fly",        compound: false, priority: 10, alts: ["Pec Deck Machine","Cable Chest Fly","Dumbbell Fly"] },
+  ]},
+  Back: { icon: "🔙", color: "#3b82f6", exercises: [
+    { name: "Barbell Row",                  compound: true,  priority: 1, alts: ["Dumbbell Row","Seated Cable Row","Row Machine"] },
+    { name: "T-Bar Row",                    compound: true,  priority: 2, alts: ["Barbell Row","Dumbbell Row","Row Machine"] },
+    { name: "Lat Pulldown (Wide Grip)",     compound: true,  priority: 3, alts: ["Lat Pulldown (Close Grip)","Assisted Pull-Up Machine","Cable Straight-Arm Pulldown"] },
+    { name: "Seated Cable Row",             compound: true,  priority: 4, alts: ["Row Machine","Dumbbell Row","Barbell Row"] },
+    { name: "Dumbbell Row",                 compound: true,  priority: 5, alts: ["Barbell Row","Seated Cable Row","Row Machine"] },
+    { name: "Row Machine",                  compound: true,  priority: 6, alts: ["Seated Cable Row","Dumbbell Row","Barbell Row"] },
+    { name: "Cable Face Pull",              compound: false, priority: 7, alts: ["Reverse Pec Deck (Rear Delt)","Dumbbell Rear Delt Fly","Cable Rear Delt Fly"] },
+    { name: "Cable Straight-Arm Pulldown",  compound: false, priority: 8, alts: ["Lat Pulldown (Wide Grip)","Dumbbell Pullover","Cable Face Pull"] },
+    { name: "Back Extension Machine",       compound: false, priority: 9, alts: ["Romanian Deadlift","Good Morning","Cable Pull-Through"] },
+  ]},
+  Shoulders: { icon: "🏋️", color: "#a855f7", exercises: [
+    { name: "Overhead Barbell Press",       compound: true,  priority: 1, alts: ["Dumbbell Shoulder Press","Shoulder Press Machine","Smith Machine Overhead Press"] },
+    { name: "Dumbbell Shoulder Press",      compound: true,  priority: 2, alts: ["Overhead Barbell Press","Shoulder Press Machine","Dumbbell Arnold Press"] },
+    { name: "Shoulder Press Machine",       compound: true,  priority: 3, alts: ["Overhead Barbell Press","Dumbbell Shoulder Press","Smith Machine Overhead Press"] },
+    { name: "Dumbbell Arnold Press",        compound: true,  priority: 4, alts: ["Dumbbell Shoulder Press","Overhead Barbell Press","Shoulder Press Machine"] },
+    { name: "Dumbbell Lateral Raise",       compound: false, priority: 5, alts: ["Cable Lateral Raise","Lateral Raise Machine","Barbell Upright Row"] },
+    { name: "Cable Lateral Raise",          compound: false, priority: 6, alts: ["Dumbbell Lateral Raise","Lateral Raise Machine","Barbell Upright Row"] },
+    { name: "Cable Rear Delt Fly",          compound: false, priority: 7, alts: ["Reverse Pec Deck (Rear Delt)","Dumbbell Rear Delt Fly","Cable Face Pull"] },
+    { name: "Dumbbell Front Raise",         compound: false, priority: 8, alts: ["Cable Front Raise","Barbell Front Raise","Dumbbell Lateral Raise"] },
+  ]},
+  Biceps: { icon: "💪", color: "#f59e0b", exercises: [
+    { name: "Barbell Bicep Curl",           compound: false, priority: 1, alts: ["EZ Bar Curl","Dumbbell Bicep Curl","Cable Bicep Curl"] },
+    { name: "EZ Bar Curl",                  compound: false, priority: 2, alts: ["Barbell Bicep Curl","Dumbbell Bicep Curl","Cable Bicep Curl"] },
+    { name: "Dumbbell Bicep Curl",          compound: false, priority: 3, alts: ["Barbell Bicep Curl","EZ Bar Curl","Cable Bicep Curl"] },
+    { name: "Dumbbell Hammer Curl",         compound: false, priority: 4, alts: ["Cable Hammer Curl","Dumbbell Bicep Curl","EZ Bar Curl"] },
+    { name: "Cable Bicep Curl",             compound: false, priority: 5, alts: ["Barbell Bicep Curl","Dumbbell Bicep Curl","EZ Bar Curl"] },
+    { name: "Preacher Curl Machine",        compound: false, priority: 6, alts: ["EZ Bar Preacher Curl","Dumbbell Concentration Curl","Cable Bicep Curl"] },
+    { name: "Dumbbell Concentration Curl",  compound: false, priority: 7, alts: ["Preacher Curl Machine","EZ Bar Curl","Cable Bicep Curl"] },
+  ]},
+  Triceps: { icon: "🔱", color: "#22c55e", exercises: [
+    { name: "Close-Grip Bench Press",              compound: true,  priority: 1, alts: ["Tricep Dip Machine","Smith Machine Close-Grip Press","Skull Crushers"] },
+    { name: "Skull Crushers",                      compound: false, priority: 2, alts: ["Dumbbell Overhead Tricep Extension","Cable Overhead Tricep Extension","Cable Tricep Pushdown (Bar)"] },
+    { name: "Cable Tricep Pushdown (Bar)",          compound: false, priority: 3, alts: ["Cable Tricep Pushdown (Rope)","Tricep Dip Machine","Dumbbell Overhead Tricep Extension"] },
+    { name: "Cable Tricep Pushdown (Rope)",         compound: false, priority: 4, alts: ["Cable Tricep Pushdown (Bar)","Tricep Dip Machine","Dumbbell Overhead Tricep Extension"] },
+    { name: "Cable Overhead Tricep Extension",      compound: false, priority: 5, alts: ["Dumbbell Overhead Tricep Extension","Cable Tricep Pushdown (Rope)","Skull Crushers"] },
+    { name: "Dumbbell Overhead Tricep Extension",   compound: false, priority: 6, alts: ["Cable Overhead Tricep Extension","Cable Tricep Pushdown (Bar)","Skull Crushers"] },
+    { name: "Tricep Dip Machine",                   compound: false, priority: 7, alts: ["Close-Grip Bench Press","Cable Tricep Pushdown (Bar)","Skull Crushers"] },
+  ]},
+  Legs: { icon: "🦵", color: "#ec4899", exercises: [
+    { name: "Romanian Deadlift",            compound: true,  priority: 1, alts: ["Dumbbell Romanian Deadlift","Lying Leg Curl","Seated Leg Curl"] },
+    { name: "Leg Press",                    compound: true,  priority: 2, alts: ["Hack Squat Machine","Smith Machine Squat","Dumbbell Lunge"] },
+    { name: "Barbell Hip Thrust",           compound: true,  priority: 3, alts: ["Dumbbell Hip Thrust","Cable Pull-Through","Glute Drive Machine"] },
+    { name: "Hack Squat Machine",           compound: true,  priority: 4, alts: ["Leg Press","Smith Machine Squat","Dumbbell Lunge"] },
+    { name: "Dumbbell Lunge",               compound: true,  priority: 5, alts: ["Barbell Lunge","Smith Machine Lunge","Leg Press"] },
+    { name: "Leg Extension",                compound: false, priority: 6, alts: ["Hack Squat Machine","Leg Press","Dumbbell Step-Up"] },
+    { name: "Lying Leg Curl",               compound: false, priority: 7, alts: ["Seated Leg Curl","Romanian Deadlift","Cable Kickback"] },
+    { name: "Seated Leg Curl",              compound: false, priority: 8, alts: ["Lying Leg Curl","Romanian Deadlift","Cable Kickback"] },
+    { name: "Standing Calf Raise Machine",  compound: false, priority: 9, alts: ["Seated Calf Raise Machine","Dumbbell Calf Raise","Leg Press Calf Raise"] },
+    { name: "Seated Calf Raise Machine",    compound: false, priority: 10, alts: ["Standing Calf Raise Machine","Dumbbell Calf Raise","Leg Press Calf Raise"] },
+    { name: "Abductor Machine",             compound: false, priority: 11, alts: ["Cable Hip Abduction","Dumbbell Side Lunge","Resistance Band Abduction"] },
+  ]},
+  Core: { icon: "⚡", color: "#06b6d4", exercises: [
+    { name: "Cable Crunch",       compound: false, priority: 1, alts: ["Ab Crunch Machine","Decline Sit-Up","Dumbbell Crunch"] },
+    { name: "Ab Crunch Machine",  compound: false, priority: 2, alts: ["Cable Crunch","Decline Sit-Up","Dumbbell Crunch"] },
+    { name: "Cable Woodchop",     compound: false, priority: 3, alts: ["Dumbbell Woodchop","Torso Rotation Machine","Dumbbell Side Bend"] },
+    { name: "Cable Pallof Press", compound: false, priority: 4, alts: ["Dumbbell Side Bend","Plank","Ab Crunch Machine"] },
+    { name: "Dumbbell Side Bend", compound: false, priority: 5, alts: ["Cable Woodchop","Cable Pallof Press","Torso Rotation Machine"] },
+  ]},
+};
+
+const ALL_GROUPS = Object.keys(MUSCLE_GROUPS);
+const COMPOUND_SETS = 4; const ISOLATION_SETS = 3;
+const COMPOUND_REPS = "6–10"; const ISOLATION_REPS = "10–15";
+const DEFAULT_BIG3  = { sets: 4, repRange: "6–10" };
+
+// ─── Session Builder ───────────────────────────────────────────────────────────
+function buildSession(selectedGroups, selectedBigThree, allLogs, customPrograms, customExercises={}) {
+  let exercises = [];
+
+  // Big Three go FIRST, always
+  selectedBigThree.forEach(key => {
+    const cfg  = BIG_THREE[key];
+    const prog = customPrograms[key] || null;
+    const history = allLogs[cfg.lift] || [];
+    let suggestion = null;
+    if (!prog && history.length > 0) {
+      const last = history[history.length - 1];
+      const ls = last.sets || [];
+      if (ls.length > 0) {
+        const lw = parseFloat(ls[0]?.weight)||0, lr = parseInt(ls[0]?.reps)||0;
+        const topped = ls.every(s => parseInt(s.reps) >= 10);
+        if (topped && lw > 0) suggestion = { weight: lw+5, repRange: COMPOUND_REPS, note: `↑ 5lbs — hit top of range at ${lw}lbs` };
+        else if (lw > 0)      suggestion = { weight: lw, repRange: `${lr+1}–10`, note: `Push for more reps at ${lw}lbs` };
+      }
+    }
+    exercises.push({
+      name:    cfg.lift,
+      compound: true,
+      group:   cfg.group,
+      alts:    cfg.alts,
+      sets:    prog ? prog.sets    : DEFAULT_BIG3.sets,
+      repRange:prog ? prog.repRange: DEFAULT_BIG3.repRange,
+      customProgram: prog,
+      suggestion,
+      isBigThree: true,
+    });
+  });
+
+  // Then muscle group exercises
+  const TARGET_REMAINING_MIN = Math.max(0, 14 - exercises.reduce((a,e)=>a+e.sets,0));
+  const TARGET_REMAINING_MAX = Math.max(0, 17 - exercises.reduce((a,e)=>a+e.sets,0));
+
+  selectedGroups.forEach(group => {
+    const baseEx = MUSCLE_GROUPS[group].exercises;
+    const userEx = (customExercises[group]||[]).filter(c=>!baseEx.find(b=>b.name===c.name));
+    const ex = [...baseEx, ...userEx];
+    const compounds  = [...ex.filter(e=>e.compound)].sort((a,b)=>a.priority-b.priority);
+    const isolations = [...ex.filter(e=>!e.compound)].sort((a,b)=>a.priority-b.priority);
+    const isFocused  = (selectedGroups.length + selectedBigThree.length) <= 2;
+    const nC = isFocused ? Math.min(2,compounds.length)  : Math.min(1,compounds.length);
+    const nI = isFocused ? Math.min(2,isolations.length) : Math.min(1,isolations.length);
+    const score = e => (allLogs[e.name]?.length||0)*10 - e.priority;
+    compounds.sort((a,b)=>score(b)-score(a)).slice(0,nC).forEach(e=>
+      exercises.push({...e,group,sets:COMPOUND_SETS,repRange:COMPOUND_REPS,customProgram:null,isBigThree:false,suggestion:getSuggestion(e,allLogs,true)})
+    );
+    isolations.sort((a,b)=>score(b)-score(a)).slice(0,nI).forEach(e=>
+      exercises.push({...e,group,sets:ISOLATION_SETS,repRange:ISOLATION_REPS,customProgram:null,isBigThree:false,suggestion:getSuggestion(e,allLogs,false)})
+    );
+  });
+
+  // Trim to max
+  let totalSets = exercises.reduce((a,e)=>a+e.sets,0);
+  const bigThreeSets = exercises.filter(e=>e.isBigThree).reduce((a,e)=>a+e.sets,0);
+  while (totalSets > 17 && exercises.length > selectedBigThree.length + selectedGroups.length) {
+    const last = exercises[exercises.length-1];
+    if (last.isBigThree) break;
+    exercises.pop(); totalSets -= last.sets;
+  }
+
+  return { exercises, totalSets, estMinutes: Math.round(totalSets * 3.5) };
+}
+
+function getSuggestion(ex, allLogs, isCompound) {
+  const history = allLogs[ex.name]||[];
+  if (!history.length) return null;
+  const last = history[history.length-1]; const ls = last.sets||[];
+  if (!ls.length) return null;
+  const lw=parseFloat(ls[0]?.weight)||0, lr=parseInt(ls[0]?.reps)||0;
+  const topped=ls.every(s=>parseInt(s.reps)>=(isCompound?10:15));
+  if (topped&&lw>0) { const inc=isCompound?5:2.5; return {weight:lw+inc,repRange:isCompound?COMPOUND_REPS:ISOLATION_REPS,note:`↑ ${inc}lbs — hit top of range at ${lw}lbs`}; }
+  if (lw>0) return {weight:lw,repRange:isCompound?`${lr+1}–10`:`${lr+1}–15`,note:`Push for more reps at ${lw}lbs`};
+  return null;
+}
+
+function findExercise(name) {
+  for (const [group,data] of Object.entries(MUSCLE_GROUPS)) {
+    const f=data.exercises.find(e=>e.name===name);
+    if(f) return {...f,group};
+  }
+  // check big three
+  for (const [key,cfg] of Object.entries(BIG_THREE)) {
+    if (cfg.lift===name) return {name:cfg.lift,compound:true,group:cfg.group,alts:cfg.alts};
+  }
+  return null;
+}
+
+// ─── Rest Timer ───────────────────────────────────────────────────────────────
+function RestTimer({ isCompound, onDone }) {
+  const REST = isCompound ? 120 : 75;
+  const [seconds, setSeconds] = useState(REST);
+  const ref = useRef(null);
+  useEffect(()=>{
+    ref.current=setInterval(()=>{
+      setSeconds(s=>{if(s<=1){clearInterval(ref.current);onDone();return 0;}return s-1;});
+    },1000);
+    return()=>clearInterval(ref.current);
+  },[]);
+  const pct=(seconds/REST)*100;
+  const color=seconds>REST*.5?"#22c55e":seconds>REST*.25?"#f59e0b":"#ef4444";
+  const display=seconds>=60?`${Math.floor(seconds/60)}:${(seconds%60).toString().padStart(2,"0")}`:`${seconds}s`;
+  return (
+    <div style={{textAlign:"center",padding:"16px 0"}}>
+      <svg width="110" height="110" viewBox="0 0 110 110">
+        <circle cx="55" cy="55" r="48" fill="none" stroke="#1a1a2a" strokeWidth="8"/>
+        <circle cx="55" cy="55" r="48" fill="none" stroke={color} strokeWidth="8"
+          strokeDasharray={`${2*Math.PI*48}`} strokeDashoffset={`${2*Math.PI*48*(1-pct/100)}`}
+          strokeLinecap="round" style={{transform:"rotate(-90deg)",transformOrigin:"50% 50%",transition:"stroke-dashoffset 1s linear,stroke 0.4s"}}/>
+        <text x="55" y="62" textAnchor="middle" fill={color} fontSize="24" fontFamily="Bebas Neue,sans-serif" letterSpacing="1">{display}</text>
+      </svg>
+      <div style={{color:"#44445a",fontSize:"0.72rem",marginTop:4}}>{isCompound?"2 min rest":"75s rest"}</div>
+      <button onClick={onDone} style={{marginTop:12,padding:"7px 20px",background:"#1a1a2a",border:"1px solid #2a2a40",borderRadius:8,color:"#666",fontSize:"0.76rem",cursor:"pointer",fontFamily:"DM Sans,sans-serif",fontWeight:700}}>Skip Rest</button>
+    </div>
+  );
+}
+
+// ─── Swap Sheet ───────────────────────────────────────────────────────────────
+function SwapSheet({ exercise, onSwap, onClose }) {
+  const alts=exercise.alts||[];
+  return (
+    <div style={{position:"fixed",inset:0,zIndex:100,display:"flex",flexDirection:"column",justifyContent:"flex-end"}}>
+      <div style={{position:"absolute",inset:0,background:"rgba(0,0,0,0.72)",backdropFilter:"blur(4px)"}} onClick={onClose}/>
+      <div style={{position:"relative",background:"#0e0e1c",borderRadius:"20px 20px 0 0",padding:"20px 18px 36px",border:"1px solid #1e1e30",maxWidth:480,margin:"0 auto",width:"100%"}}>
+        <div style={{width:36,height:4,background:"#2a2a40",borderRadius:4,margin:"0 auto 18px"}}/>
+        <div style={{fontSize:"0.62rem",fontWeight:700,letterSpacing:"0.12em",textTransform:"uppercase",color:"#3a3a58",marginBottom:6}}>Swap Exercise</div>
+        <div style={{fontWeight:700,fontSize:"1rem",color:"#eeeef5",marginBottom:4}}>{exercise.name}</div>
+        <div style={{fontSize:"0.75rem",color:"#44445a",marginBottom:18}}>Equipment busy? Pick an alternative targeting the same muscle.</div>
+        {alts.length===0?<div style={{color:"#3a3a58",fontSize:"0.85rem",textAlign:"center",padding:"20px 0"}}>No alternatives listed.</div>
+          :alts.map((alt,i)=>{
+            const ae=findExercise(alt);
+            const gc=MUSCLE_GROUPS[ae?.group]?.color||BIG_THREE[ae?.key]?.color||"#888";
+            return (
+              <button key={i} onClick={()=>onSwap(alt)} style={{width:"100%",display:"flex",alignItems:"center",gap:13,background:"#14141f",border:"1.5px solid #1e1e2e",borderRadius:13,padding:"13px 14px",marginBottom:9,cursor:"pointer",textAlign:"left"}}>
+                <div style={{width:38,height:38,borderRadius:10,background:`color-mix(in srgb,${gc} 14%,#10101c)`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:"1.1rem",flexShrink:0}}>
+                  {MUSCLE_GROUPS[ae?.group]?.icon||"🔄"}
+                </div>
+                <div style={{flex:1}}>
+                  <div style={{fontWeight:700,fontSize:"0.9rem",color:"#ddddf0",fontFamily:"DM Sans,sans-serif"}}>{alt}</div>
+                  <div style={{fontSize:"0.65rem",color:"#3a3a58",marginTop:2,fontFamily:"DM Sans,sans-serif"}}>{ae?.compound?"Compound":"Isolation"} · {ae?.group||""}</div>
+                </div>
+                <div style={{color:"#3a3a58"}}>→</div>
+              </button>
+            );
+          })}
+        <button onClick={onClose} style={{width:"100%",padding:"13px",background:"#14141f",border:"1px solid #1e1e2e",borderRadius:12,color:"#44445a",fontFamily:"DM Sans,sans-serif",fontWeight:700,fontSize:"0.85rem",cursor:"pointer",marginTop:4}}>Keep Current</button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Program Sheet ────────────────────────────────────────────────────────────
+// Round to nearest 2.5lbs (standard plate math)
+function roundToPlate(lbs) { return Math.round(lbs / 2.5) * 2.5; }
+
+function ProgramSheet({ b3key, existing, onSave, onDelete, onClose }) {
+  const cfg = BIG_THREE[b3key];
+  const [useCustom,  setUseCustom]  = useState(!!existing);
+  const [name,       setName]       = useState(existing?.name||"");
+  const [sets,       setSets]       = useState(existing?.sets?.toString()||"5");
+  const [repRange,   setRepRange]   = useState(existing?.repRange||"5");
+  const [note,       setNote]       = useState(existing?.note||"");
+  // 1RM + percentage
+  const [oneRM,      setOneRM]      = useState(existing?.oneRM?.toString()||"");
+  const [pct,        setPct]        = useState(existing?.pct?.toString()||"");
+  const [confirmDel, setConfirmDel] = useState(false);
+
+  const oneRMval  = parseFloat(oneRM);
+  const pctVal    = parseFloat(pct);
+  const calcWeight = (oneRMval > 0 && pctVal > 0)
+    ? roundToPlate(oneRMval * (pctVal / 100))
+    : null;
+
+  const canSave = !useCustom || (name.trim() && parseInt(sets) > 0 && repRange.trim());
+
+  function handleSave() {
+    if (!useCustom) { onDelete(); return; }
+    onSave({
+      name:     name.trim(),
+      sets:     parseInt(sets),
+      repRange: repRange.trim(),
+      note:     note.trim(),
+      oneRM:    oneRMval > 0 ? oneRMval : null,
+      pct:      pctVal  > 0 ? pctVal   : null,
+      calcWeight,
+    });
+  }
+
+  const inputStyle = { width:"100%", background:"#0c0c18", border:"1.5px solid #18182c", borderRadius:11, color:"#eeeef5", fontFamily:"DM Sans,sans-serif", fontSize:"1.1rem", fontWeight:700, padding:"11px 10px", textAlign:"center" };
+  const labelStyle = { fontSize:"0.6rem", fontWeight:700, color:"#3a3a58", textTransform:"uppercase", letterSpacing:"0.09em", marginBottom:5 };
+
+  return (
+    <div style={{position:"fixed",inset:0,zIndex:100,display:"flex",flexDirection:"column",justifyContent:"flex-end"}}>
+      <div style={{position:"absolute",inset:0,background:"rgba(0,0,0,0.72)",backdropFilter:"blur(4px)"}} onClick={onClose}/>
+      {/* Scrollable inner sheet */}
+      <div style={{position:"relative",background:"#0e0e1c",borderRadius:"20px 20px 0 0",border:"1px solid #1e1e30",maxWidth:480,margin:"0 auto",width:"100%",maxHeight:"90vh",overflowY:"auto"}}>
+        <div style={{padding:"20px 18px 36px"}}>
+          <div style={{width:36,height:4,background:"#2a2a40",borderRadius:4,margin:"0 auto 16px"}}/>
+          <div style={{fontSize:"0.62rem",fontWeight:700,letterSpacing:"0.12em",textTransform:"uppercase",color:"#3a3a58",marginBottom:4}}>Programming</div>
+          <div style={{fontWeight:700,fontSize:"1.05rem",color:"#eeeef5",marginBottom:16}}>{cfg.icon} {b3key}</div>
+
+          {/* Default vs Custom toggle */}
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:18}}>
+            {[
+              [false,"⚡","Default","4 × 6–10"],
+              [true, "📋","Custom Program","your scheme"],
+            ].map(([val,icon,label,sub])=>(
+              <button key={label} onClick={()=>setUseCustom(val)}
+                style={{padding:"11px",borderRadius:11,border:`1.5px solid ${useCustom===val?"#f59e0b":"#1e1e2e"}`,background:useCustom===val?"#f59e0b0e":"#14141f",color:useCustom===val?"#f59e0b":"#44445a",fontFamily:"DM Sans,sans-serif",fontWeight:700,fontSize:"0.82rem",cursor:"pointer",transition:"all .15s"}}>
+                <div style={{fontSize:"1rem",marginBottom:3}}>{icon}</div>
+                {label}
+                <div style={{fontSize:"0.65rem",opacity:.7,marginTop:2}}>{sub}</div>
+              </button>
+            ))}
+          </div>
+
+          {useCustom && !confirmDel && (
+            <>
+              {/* Program name */}
+              <div style={{marginBottom:12}}>
+                <div style={labelStyle}>Program Name</div>
+                <input value={name} onChange={e=>setName(e.target.value)}
+                  placeholder="e.g. 5/3/1, GZCLP, Starting Strength..."
+                  style={{...inputStyle, fontSize:"0.95rem", textAlign:"left", padding:"11px 13px", fontWeight:400}}/>
+              </div>
+
+              {/* Sets + Reps */}
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
+                <div>
+                  <div style={labelStyle}>Sets</div>
+                  <input type="number" inputMode="decimal" value={sets} onChange={e=>setSets(e.target.value)} placeholder="5" style={inputStyle}/>
+                </div>
+                <div>
+                  <div style={labelStyle}>Reps / Scheme</div>
+                  <input value={repRange} onChange={e=>setRepRange(e.target.value)} placeholder="e.g. 5, 3/3/1" style={inputStyle}/>
+                </div>
+              </div>
+
+              {/* Divider */}
+              <div style={{display:"flex",alignItems:"center",gap:10,margin:"16px 0 14px"}}>
+                <div style={{flex:1,height:1,background:"#1a1a2a"}}/>
+                <div style={{fontSize:"0.62rem",fontWeight:700,color:"#3a3a58",letterSpacing:"0.1em",textTransform:"uppercase"}}>1RM Weight Calculator</div>
+                <div style={{flex:1,height:1,background:"#1a1a2a"}}/>
+              </div>
+              <div style={{fontSize:"0.75rem",color:"#3a3a58",marginBottom:12,lineHeight:1.55}}>
+                Optional — enter your 1 rep max and a percentage to auto-calculate your working weight. Great for 5/3/1, Wendler, and percentage-based programs.
+              </div>
+
+              {/* 1RM + Percentage inputs */}
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10}}>
+                <div>
+                  <div style={labelStyle}>My 1RM (lbs)</div>
+                  <input type="number" inputMode="decimal" value={oneRM} onChange={e=>setOneRM(e.target.value)}
+                    placeholder="e.g. 140" style={inputStyle}/>
+                </div>
+                <div>
+                  <div style={labelStyle}>Percentage (%)</div>
+                  <input type="number" inputMode="decimal" value={pct} onChange={e=>setPct(e.target.value)}
+                    placeholder="e.g. 75" style={inputStyle}/>
+                </div>
+              </div>
+
+              {/* Live calculated weight display */}
+              {calcWeight !== null ? (
+                <div style={{background:"linear-gradient(135deg,#f59e0b12,#ef444412)",border:"1px solid #f59e0b33",borderRadius:13,padding:"14px 16px",marginBottom:14,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                  <div>
+                    <div style={{fontSize:"0.62rem",fontWeight:700,color:"#f59e0b88",textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:3}}>Working Weight</div>
+                    <div style={{fontSize:"0.78rem",color:"#f59e0b77"}}>
+                      {pct}% of {oneRM}lbs 1RM
+                    </div>
+                  </div>
+                  <div style={{textAlign:"right"}}>
+                    <div style={{fontFamily:"Bebas Neue,sans-serif",fontSize:"2.2rem",color:"#f59e0b",lineHeight:1}}>{calcWeight}</div>
+                    <div style={{fontSize:"0.65rem",color:"#f59e0b66",letterSpacing:"0.08em"}}>LBS · rounded to 2.5</div>
+                  </div>
+                </div>
+              ) : (oneRM || pct) ? (
+                <div style={{background:"#14141f",border:"1px solid #1e1e2e",borderRadius:13,padding:"12px 16px",marginBottom:14,fontSize:"0.78rem",color:"#3a3a58",textAlign:"center"}}>
+                  Enter both 1RM and percentage to calculate weight
+                </div>
+              ) : (
+                <div style={{background:"#0e0e18",border:"1px dashed #1e1e2e",borderRadius:13,padding:"12px 16px",marginBottom:14,fontSize:"0.78rem",color:"#28284a",textAlign:"center"}}>
+                  Working weight will appear here
+                </div>
+              )}
+
+              {/* Notes */}
+              <div style={{marginBottom:16}}>
+                <div style={labelStyle}>Notes (optional)</div>
+                <input value={note} onChange={e=>setNote(e.target.value)}
+                  placeholder="e.g. Week 2 of cycle, 90% training max..."
+                  style={{...inputStyle, fontSize:"0.88rem", textAlign:"left", padding:"11px 13px", fontWeight:400}}/>
+              </div>
+
+              {existing && (
+                <button onClick={()=>setConfirmDel(true)}
+                  style={{width:"100%",padding:"10px",background:"#1a0a0a",border:"1px solid #ef444422",borderRadius:10,color:"#ef444466",fontFamily:"DM Sans,sans-serif",fontWeight:700,fontSize:"0.78rem",cursor:"pointer",marginBottom:10}}>
+                  Remove Custom Program
+                </button>
+              )}
+            </>
+          )}
+
+          {useCustom && confirmDel && (
+            <div style={{background:"#1a0a0a",border:"1px solid #ef444433",borderRadius:12,padding:"14px 16px",marginBottom:14}}>
+              <div style={{fontSize:"0.85rem",color:"#ef4444aa",fontWeight:600,marginBottom:12}}>Remove custom program? This lift will use default sets/reps.</div>
+              <div style={{display:"flex",gap:9}}>
+                <button onClick={onDelete} style={{flex:1,padding:"10px",background:"#ef444422",border:"1px solid #ef444444",borderRadius:10,color:"#ef4444",fontWeight:700,fontSize:"0.82rem",cursor:"pointer",fontFamily:"DM Sans,sans-serif"}}>Yes, Remove</button>
+                <button onClick={()=>setConfirmDel(false)} style={{flex:1,padding:"10px",background:"#14141f",border:"1px solid #1e1e2e",borderRadius:10,color:"#44445a",fontWeight:700,fontSize:"0.82rem",cursor:"pointer",fontFamily:"DM Sans,sans-serif"}}>Cancel</button>
+              </div>
+            </div>
+          )}
+
+          {!confirmDel && (
+            <>
+              <button disabled={!canSave} onClick={handleSave}
+                style={{width:"100%",padding:"14px",border:"none",borderRadius:12,background:canSave?"linear-gradient(135deg,#f59e0b,#ef4444)":"#14141f",color:canSave?"#fff":"#2a2a40",fontFamily:"Bebas Neue,sans-serif",fontSize:"1.15rem",letterSpacing:"0.1em",cursor:canSave?"pointer":"default",marginBottom:8}}>
+                {useCustom ? "Save Program" : "Use Default"}
+              </button>
+              <button onClick={onClose}
+                style={{width:"100%",padding:"12px",background:"#14141f",border:"1px solid #1e1e2e",borderRadius:12,color:"#44445a",fontFamily:"DM Sans,sans-serif",fontWeight:700,fontSize:"0.83rem",cursor:"pointer"}}>
+                Cancel
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Edit Exercise Sheet ──────────────────────────────────────────────────────
+function EditExSheet({ exercise, idx, onAction, onClose, groupExercises }) {
+  const [tab,        setTab]        = useState("replace");
+  const [search,     setSearch]     = useState("");
+  const [newName,    setNewName]    = useState("");
+  const [isCompound, setIsCompound] = useState(exercise.compound);
+
+  // Build full list: built-in exercises for this group + custom ones, minus current exercise
+  const allOptions = (groupExercises || []).filter(e => e.name !== exercise.name);
+  const filtered   = search.trim()
+    ? allOptions.filter(e => e.name.toLowerCase().includes(search.toLowerCase()))
+    : allOptions;
+  const compounds  = filtered.filter(e => e.compound);
+  const isolations = filtered.filter(e => !e.compound);
+
+  const tabs = [
+    ["replace", "🔄", "Replace"],
+    ["create",  "✚",  "Create New"],
+    ["delete",  "🗑️", "Skip Today"],
+  ];
+
+  const tabColor = t => t === "delete" ? "#ef4444" : "#f59e0b";
+
+  return (
+    <div style={{position:"fixed",inset:0,zIndex:100,display:"flex",flexDirection:"column",justifyContent:"flex-end"}}>
+      <div style={{position:"absolute",inset:0,background:"rgba(0,0,0,0.72)",backdropFilter:"blur(4px)"}} onClick={onClose}/>
+      <div style={{position:"relative",background:"#0e0e1c",borderRadius:"20px 20px 0 0",border:"1px solid #252538",maxWidth:480,margin:"0 auto",width:"100%",maxHeight:"88vh",display:"flex",flexDirection:"column"}}>
+
+        {/* Fixed header */}
+        <div style={{padding:"18px 18px 0",flexShrink:0}}>
+          <div style={{width:36,height:4,background:"#2a2a40",borderRadius:4,margin:"0 auto 14px"}}/>
+          <div style={{fontSize:"0.62rem",fontWeight:700,letterSpacing:"0.12em",textTransform:"uppercase",color:"#8888aa",marginBottom:3}}>Edit Exercise</div>
+          <div style={{fontWeight:700,fontSize:"1rem",color:"#eeeef5",marginBottom:14,lineHeight:1.3}}>{exercise.name}</div>
+
+          {/* 3-tab row */}
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:7,marginBottom:14}}>
+            {tabs.map(([t,icon,label])=>(
+              <button key={t} onClick={()=>setTab(t)}
+                style={{padding:"9px 4px",borderRadius:11,border:`1.5px solid ${tab===t?tabColor(t):"#252538"}`,background:tab===t?`${tabColor(t)}12`:"#14141f",color:tab===t?tabColor(t):"#8888aa",fontFamily:"DM Sans,sans-serif",fontWeight:700,fontSize:"0.75rem",cursor:"pointer",transition:"all .15s",textAlign:"center"}}>
+                <div style={{fontSize:"0.95rem",marginBottom:2}}>{icon}</div>
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Scrollable body */}
+        <div style={{overflowY:"auto",flex:1,padding:"0 18px 32px"}}>
+
+          {/* ── REPLACE — browse list ── */}
+          {tab==="replace" && (
+            <>
+              <div style={{fontSize:"0.72rem",color:"#8888aa",marginBottom:10,lineHeight:1.5}}>
+                Pick any exercise from your library for <strong style={{color:"#aaaacc"}}>{exercise.group}</strong>.
+              </div>
+              <input
+                value={search}
+                onChange={e=>setSearch(e.target.value)}
+                placeholder="Search exercises..."
+                style={{width:"100%",background:"#0c0c18",border:"1.5px solid #252538",borderRadius:10,color:"#eeeef5",fontFamily:"DM Sans,sans-serif",fontSize:"0.88rem",padding:"10px 13px",marginBottom:12}}
+              />
+              {[["🏋️ Compound", compounds], ["🎯 Isolation", isolations]].map(([heading, list])=>(
+                list.length === 0 ? null :
+                <div key={heading} style={{marginBottom:10}}>
+                  <div style={{fontSize:"0.6rem",fontWeight:700,color:"#7777aa",textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:6}}>{heading}</div>
+                  {list.map(e=>(
+                    <button key={e.name} onClick={()=>onAction({action:"replace",idx,newName:e.name,isCompound:e.compound})}
+                      style={{width:"100%",display:"flex",alignItems:"center",justifyContent:"space-between",background:"#12121e",border:"1px solid #252538",borderRadius:10,padding:"11px 13px",marginBottom:6,cursor:"pointer",textAlign:"left"}}>
+                      <div>
+                        <div style={{fontWeight:700,fontSize:"0.88rem",color:"#ddddee",fontFamily:"DM Sans,sans-serif"}}>{e.name}</div>
+                        {e.custom && <div style={{fontSize:"0.62rem",color:"#f59e0b88",marginTop:1}}>⭐ Custom</div>}
+                      </div>
+                      <div style={{color:"#7777aa",fontSize:"0.85rem",flexShrink:0}}>→</div>
+                    </button>
+                  ))}
+                </div>
+              ))}
+              {filtered.length===0 && (
+                <div style={{textAlign:"center",color:"#44447a",padding:"20px 0",fontSize:"0.82rem"}}>No exercises found.<br/>Use "Create New" to add one.</div>
+              )}
+            </>
+          )}
+
+          {/* ── CREATE NEW ── */}
+          {tab==="create" && (
+            <>
+              <div style={{fontSize:"0.72rem",color:"#8888aa",marginBottom:12,lineHeight:1.55}}>
+                Add a brand-new exercise. It'll be saved to your library and included in future sessions and data exports.
+              </div>
+              <div style={{marginBottom:12}}>
+                <div style={{fontSize:"0.6rem",fontWeight:700,color:"#8888aa",textTransform:"uppercase",letterSpacing:"0.09em",marginBottom:5}}>Exercise Name</div>
+                <input
+                  value={newName}
+                  onChange={e=>setNewName(e.target.value)}
+                  placeholder="e.g. Hammer Strength Chest Press"
+                  autoFocus
+                  style={{width:"100%",background:"#0c0c18",border:"1.5px solid #252538",borderRadius:11,color:"#eeeef5",fontFamily:"DM Sans,sans-serif",fontSize:"0.95rem",padding:"13px 14px"}}
+                />
+              </div>
+              <div style={{marginBottom:16}}>
+                <div style={{fontSize:"0.6rem",fontWeight:700,color:"#8888aa",textTransform:"uppercase",letterSpacing:"0.09em",marginBottom:7}}>Exercise Type</div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+                  {[[true,"🏋️","Compound","Multi-joint, heavy"],[false,"🎯","Isolation","Single-joint, focused"]].map(([val,icon,label,sub])=>(
+                    <button key={label} onClick={()=>setIsCompound(val)}
+                      style={{padding:"10px 8px",borderRadius:11,border:`1.5px solid ${isCompound===val?"#f59e0b":"#252538"}`,background:isCompound===val?"#f59e0b0e":"#14141f",color:isCompound===val?"#f59e0b":"#8888aa",fontFamily:"DM Sans,sans-serif",fontWeight:700,fontSize:"0.78rem",cursor:"pointer",transition:"all .15s",textAlign:"center"}}>
+                      <div style={{fontSize:"1rem",marginBottom:2}}>{icon}</div>
+                      <div>{label}</div>
+                      <div style={{fontSize:"0.6rem",opacity:.7,marginTop:1}}>{sub}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div style={{fontSize:"0.68rem",color:"#7777aa",marginBottom:16,display:"flex",alignItems:"center",gap:5}}>
+                <span style={{color:"#22c55e66",fontSize:"0.85rem"}}>✓</span>
+                Will be saved to <strong style={{color:"#aaaacc"}}>{exercise.group}</strong> · included in exports
+              </div>
+              <button disabled={!newName.trim()} onClick={()=>onAction({action:"replace",idx,newName:newName.trim(),isCompound,saveAsNew:true})}
+                style={{width:"100%",padding:"14px",border:"none",borderRadius:12,background:newName.trim()?"linear-gradient(135deg,#f59e0b,#ef4444)":"#14141f",color:newName.trim()?"#fff":"#2a2a40",fontFamily:"Bebas Neue,sans-serif",fontSize:"1.15rem",letterSpacing:"0.1em",cursor:newName.trim()?"pointer":"default",marginBottom:8}}>
+                Create &amp; Use →
+              </button>
+            </>
+          )}
+
+          {/* ── SKIP TODAY ── */}
+          {tab==="delete" && (
+            <>
+              <div style={{fontSize:"0.78rem",color:"#8888aa",marginBottom:18,lineHeight:1.6}}>
+                Feeling too sore or want to cut this one today? This only removes it from <em style={{color:"#aaaacc"}}>today's session</em>. It'll still be in your library for next time.
+              </div>
+              <button onClick={()=>onAction({action:"delete",idx})}
+                style={{width:"100%",padding:"14px",border:"1.5px solid #ef444433",borderRadius:12,background:"#ef44440e",color:"#ef4444",fontFamily:"Bebas Neue,sans-serif",fontSize:"1.15rem",letterSpacing:"0.1em",cursor:"pointer",marginBottom:8}}>
+                Skip This Exercise
+              </button>
+            </>
+          )}
+
+          <button onClick={onClose}
+            style={{width:"100%",padding:"12px",background:"#14141f",border:"1px solid #252538",borderRadius:12,color:"#8888aa",fontFamily:"DM Sans,sans-serif",fontWeight:700,fontSize:"0.83rem",cursor:"pointer"}}>
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Main App ─────────────────────────────────────────────────────────────────
+function GymTracker() {
+  const [screen, setScreen]                     = useState("home");
+  const [selectedGroups, setSelectedGroups]     = useState([]);
+  const [selectedBigThree, setSelectedBigThree] = useState([]); // keys e.g. ["Bench Press"]
+  const [session, setSession]                   = useState(null);
+  const [activeExIdx, setActiveExIdx]           = useState(0);
+  const [activeSetIdx, setActiveSetIdx]         = useState(0);
+  const [resting, setResting]                   = useState(false);
+  const [setInputs, setSetInputs]               = useState({});
+  const [allLogs, setAllLogs]                   = useState({});
+  const [prs, setPrs]                           = useState({});
+  const [customPrograms, setCustomPrograms]     = useState({}); // keyed by b3key e.g. "Bench Press"
+  const [historyFilter, setHistoryFilter]       = useState("All");
+  const [sessionComplete, setSessionComplete]   = useState(false);
+  const [newPRs, setNewPRs]                     = useState([]);
+  const [swapIdx, setSwapIdx]                   = useState(null);
+  const [programKey, setProgramKey]             = useState(null);
+  const [customExercises, setCustomExercises]   = useState({});
+  const [editExIdx, setEditExIdx]               = useState(null);
+  const [importText, setImportText]             = useState("");
+  const [importStatus, setImportStatus]         = useState(null);
+  const [showImport, setShowImport]             = useState(false);
+  const [addingExercise, setAddingExercise]     = useState(false);
+  const [addExName, setAddExName]               = useState("");
+  const [addExCompound, setAddExCompound]       = useState(true);
+  const [savedSession, setSavedSession]         = useState(null); // paused session state
+  const [historyView, setHistoryView]           = useState("sessions"); // "sessions" | "exercises"
+  const [expandedSession, setExpandedSession]   = useState(null);
+  const [confirmDeleteSession, setConfirmDeleteSession] = useState(null);
+  const [failureAnswer, setFailureAnswer]               = useState(null);
+  const [showFailureQ, setShowFailureQ]                 = useState(false);
+  const [setFailureMap, setSetFailureMap]               = useState({}); // {`${exIdx}-${setIdx}`: true|false}
+  const [prHistory, setPrHistory]                       = useState({});
+  const [prGraphEx, setPrGraphEx]                       = useState(null);
+  const [editingHistoryEntry, setEditingHistoryEntry]   = useState(null); // {exName, logIdx, sets:[{reps,weight}]}
+
+  useEffect(()=>{
+    async function load(){
+      try{
+        const l=await window.storage.get("gym_logs_v4");
+        const p=await window.storage.get("gym_prs_v4");
+        const c=await window.storage.get("gym_progs_v4");
+        const x=await window.storage.get("gym_custom_ex_v4");
+        const h=await window.storage.get("gym_pr_history_v4");
+        if(l) setAllLogs(JSON.parse(l.value));
+        if(p) setPrs(JSON.parse(p.value));
+        if(c) setCustomPrograms(JSON.parse(c.value));
+        if(x) setCustomExercises(JSON.parse(x.value));
+        if(h) setPrHistory(JSON.parse(h.value));
+      }catch(e){}
+    }
+    load();
+  },[]);
+
+  async function saveProgram(key, prog) {
+    const updated={...customPrograms,[key]:prog};
+    setCustomPrograms(updated); setProgramKey(null);
+    try{await window.storage.set("gym_progs_v4",JSON.stringify(updated));}catch(e){}
+  }
+  async function deleteProgram(key) {
+    const updated={...customPrograms}; delete updated[key];
+    setCustomPrograms(updated); setProgramKey(null);
+    try{await window.storage.set("gym_progs_v4",JSON.stringify(updated));}catch(e){}
+  }
+
+  // Save a user-typed exercise into the permanent bank for a group
+  async function saveCustomExercise(group, name, isCompound) {
+    const entry = { name, compound: isCompound, priority: 999, alts: [], custom: true };
+    const updated = { ...customExercises, [group]: [...(customExercises[group]||[]).filter(e=>e.name!==name), entry] };
+    setCustomExercises(updated);
+    try { await window.storage.set("gym_custom_ex_v4", JSON.stringify(updated)); } catch(e) {}
+  }
+
+  // Replace a session exercise with a custom-typed one, or delete it
+  function handleEditEx({ action, idx, newName, isCompound, saveAsNew }) {
+    setEditExIdx(null);
+    if (action === "delete") {
+      const updated = session.exercises.filter((_,i)=>i!==idx);
+      const totalSets = updated.reduce((a,e)=>a+e.sets,0);
+      const ni = {};
+      Object.entries(setInputs).forEach(([k,v])=>{
+        const [ei,si,f] = k.split("-");
+        const eiN = parseInt(ei);
+        if (eiN < idx) ni[k] = v;
+        else if (eiN > idx) ni[`${eiN-1}-${si}-${f}`] = v;
+      });
+      setSetInputs(ni);
+      if (idx <= activeExIdx && activeExIdx > 0) setActiveExIdx(i=>i-1);
+      setSession({ ...session, exercises: updated, totalSets, estMinutes: Math.round(totalSets*3.5) });
+      return;
+    }
+    if (action === "replace" && newName.trim()) {
+      const old = session.exercises[idx];
+      const group = old.group;
+      const compound = isCompound !== undefined ? isCompound : old.compound;
+      // Always save to custom bank (built-in picks are fine to re-save, custom ones definitely need saving)
+      saveCustomExercise(group, newName.trim(), compound);
+      const updated = [...session.exercises];
+      updated[idx] = {
+        ...old,
+        name: newName.trim(),
+        compound,
+        suggestion: getSuggestion({name:newName.trim()}, allLogs, compound),
+      };
+      const ni = {...setInputs};
+      for(let s=0;s<old.sets;s++){delete ni[`${idx}-${s}-reps`];delete ni[`${idx}-${s}-weight`];}
+      setSetInputs(ni);
+      setSession({...session, exercises: updated});
+    }
+  }
+
+  function exportData() {
+    const data = {
+      version: 1,
+      exported: new Date().toISOString(),
+      logs: allLogs,
+      prs,
+      programs: customPrograms,
+      customExercises,
+      prHistory,
+    };
+    const json = JSON.stringify(data, null, 2);
+    const blob = new Blob([json], { type: "application/json" });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    a.href     = url;
+    a.download = `iron-log-backup-${new Date().toLocaleDateString("en-GB").replace(/ /g,"-")}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async function importData() {
+    try {
+      const data = JSON.parse(importText);
+      if (!data.logs || !data.prs) throw new Error("Invalid file");
+      setAllLogs(data.logs);
+      setPrs(data.prs);
+      if (data.programs)        setCustomPrograms(data.programs);
+      if (data.customExercises)  setCustomExercises(data.customExercises);
+      if (data.prHistory)        setPrHistory(data.prHistory);
+      await window.storage.set("gym_logs_v4",      JSON.stringify(data.logs));
+      await window.storage.set("gym_prs_v4",       JSON.stringify(data.prs));
+      await window.storage.set("gym_progs_v4",     JSON.stringify(data.programs||{}));
+      await window.storage.set("gym_custom_ex_v4", JSON.stringify(data.customExercises||{}));
+      await window.storage.set("gym_pr_history_v4",JSON.stringify(data.prHistory||{}));
+      setImportStatus("ok");
+      setImportText("");
+      setTimeout(() => setImportStatus(null), 3000);
+    } catch(e) {
+      setImportStatus("error");
+      setTimeout(() => setImportStatus(null), 3000);
+    }
+  }
+
+  function toggleGroup(g)    { setSelectedGroups(p=>p.includes(g)?p.filter(x=>x!==g):[...p,g]); }
+  function toggleBigThree(k) { setSelectedBigThree(p=>p.includes(k)?p.filter(x=>x!==k):[...p,k]); }
+
+  function buildSessionTitle(groups, bigThree) {
+    const parts = [...bigThree, ...groups];
+    return parts.length === 0 ? "Workout" : parts.join(" + ");
+  }
+
+  function startSession(){
+    const built=buildSession(selectedGroups,selectedBigThree,allLogs,customPrograms,customExercises);
+    const title = buildSessionTitle(selectedGroups, selectedBigThree);
+    setSession({...built, title});
+    setActiveExIdx(0);setActiveSetIdx(0);
+    setResting(false);setSetInputs({});setSessionComplete(false);setNewPRs([]);
+    setSavedSession(null);
+    setScreen("session");
+  }
+
+  function pauseSession(){
+    // Save everything needed to resume
+    setSavedSession({ session, activeExIdx, activeSetIdx, setInputs, newPRs });
+    setScreen("home");
+  }
+
+  function resumeSession(){
+    if(!savedSession) return;
+    setSession(savedSession.session);
+    setActiveExIdx(savedSession.activeExIdx);
+    setActiveSetIdx(savedSession.activeSetIdx);
+    setSetInputs(savedSession.setInputs);
+    setNewPRs(savedSession.newPRs);
+    setResting(false);
+    setSessionComplete(false);
+    setScreen("session");
+  }
+
+  async function deleteSessionLog(sessionId) {
+    // sessionId is a string: "exerciseName|||dateStr|||index"
+    const [exName, dateStr, idxStr] = sessionId.split("|||");
+    const idx = parseInt(idxStr);
+    const updated = {...allLogs};
+    if (updated[exName]) {
+      updated[exName] = updated[exName].filter((_,i) => {
+        // match by date and index within that exercise's logs
+        return !(updated[exName][i].date === dateStr && i === idx);
+      });
+      if (updated[exName].length === 0) delete updated[exName];
+    }
+    setAllLogs(updated);
+    setConfirmDeleteSession(null);
+    try { await window.storage.set("gym_logs_v4", JSON.stringify(updated)); } catch(e) {}
+  }
+
+  async function deleteFullSession(sessionKey) {
+    // sessionKey: "title|||dateStr" — delete ALL exercise entries from that date+title
+    const [title, dateStr] = sessionKey.split("|||");
+    const updated = {...allLogs};
+    Object.keys(updated).forEach(ex => {
+      updated[ex] = updated[ex].filter(l => !(l.date === dateStr && (l.sessionTitle||"") === title));
+      if (updated[ex].length === 0) delete updated[ex];
+    });
+    setAllLogs(updated);
+    setConfirmDeleteSession(null);
+    setExpandedSession(null);
+    try { await window.storage.set("gym_logs_v4", JSON.stringify(updated)); } catch(e) {}
+  }
+
+  function getInput(ei,si,f){return setInputs[`${ei}-${si}-${f}`]||"";}
+  function putInput(ei,si,f,v){setSetInputs(p=>({...p,[`${ei}-${si}-${f}`]:v}));}
+
+  function handleSwap(newName){
+    const idx=swapIdx; setSwapIdx(null);
+    const found=findExercise(newName); if(!found) return;
+    const old=session.exercises[idx];
+    const updated=[...session.exercises];
+    updated[idx]={
+      ...found,group:found.group,sets:old.sets,repRange:old.repRange,
+      customProgram:null,isBigThree:false,
+      suggestion:getSuggestion(found,allLogs,found.compound),
+    };
+    const ni={...setInputs};
+    for(let s=0;s<old.sets;s++){delete ni[`${idx}-${s}-reps`];delete ni[`${idx}-${s}-weight`];}
+    setSetInputs(ni);
+    setSession({...session,exercises:updated});
+  }
+
+  async function logSet(){
+    const ex=session.exercises[activeExIdx];
+    const reps=getInput(activeExIdx,activeSetIdx,"reps");
+    const weight=getInput(activeExIdx,activeSetIdx,"weight");
+    if(!reps||!weight) return;
+    // Mark set as logged
+    setSetInputs(p=>({...p,[`${activeExIdx}-${activeSetIdx}-logged`]:true}));
+    // Show failure question — afterFailureQ will then start rest
+    setShowFailureQ(true);
+  }
+
+  function afterFailureQ(wentToFailure) {
+    const ex=session.exercises[activeExIdx];
+    // Record failure for this set
+    setSetFailureMap(p=>({...p,[`${activeExIdx}-${activeSetIdx}`]:wentToFailure}));
+    setShowFailureQ(false);
+    // Now advance set / start rest
+    if(activeSetIdx < ex.sets-1){
+      setActiveSetIdx(i=>i+1);
+      setResting(true);
+    } else {
+      setResting(true);
+    }
+  }
+
+  async function doneExercise(){
+    await confirmDoneExercise();
+  }
+
+  async function confirmDoneExercise(){
+    setShowFailureQ(false);
+    const ex=session.exercises[activeExIdx];
+    const newLogs={...allLogs},newPrsL={...prs},prList=[...newPRs];
+    const allSets=Array.from({length:ex.sets},(_,i)=>({
+      reps:getInput(activeExIdx,i,"reps"),
+      weight:getInput(activeExIdx,i,"weight"),
+      wentToFailure: setFailureMap[`${activeExIdx}-${i}`] || false,
+    })).filter(s=>s.reps&&s.weight);
+
+    // Find the best set for 1RM: highest estimated 1RM across ALL sets
+    // If any set was to failure, prefer those; otherwise use best estimated
+    let calc1RM = null;
+    if (allSets.length > 0) {
+      const failureSets = allSets.filter(s=>s.wentToFailure);
+      const setsToUse = failureSets.length > 0 ? failureSets : allSets;
+      let best1RM = 0;
+      setsToUse.forEach(s => {
+        const w=parseFloat(s.weight), r=parseInt(s.reps);
+        if(w>0 && r>0 && r<37){
+          const est = w*(36/(37-r));
+          if(est > best1RM) best1RM = est;
+        }
+      });
+      if(best1RM > 0) calc1RM = Math.round(best1RM*10)/10;
+    }
+
+    if(allSets.length>0){
+      const dateStr = new Date().toLocaleDateString("en-GB",{day:"numeric",month:"short",year:"numeric"});
+      const setsToSave = allSets.map(({reps,weight,wentToFailure})=>({reps,weight,wentToFailure}));
+      newLogs[ex.name]=[...(newLogs[ex.name]||[]),{
+        date: dateStr,
+        sets: setsToSave,
+        muscleGroup: ex.group,
+        program: ex.customProgram?.name||null,
+        sessionTitle: session.title||"Workout",
+        calc1RM,
+      }];
+
+      // Update PR
+      if(calc1RM && calc1RM>(newPrsL[ex.name]||0)){
+        newPrsL[ex.name]=calc1RM; prList.push(ex.name);
+      }
+      setPrs(newPrsL); setNewPRs(prList);
+      try{await window.storage.set("gym_prs_v4",JSON.stringify(newPrsL));}catch(e){}
+
+      // Save 1RM history point
+      if (calc1RM) {
+        const anyFailure = allSets.some(s=>s.wentToFailure);
+        const newPrHist = {...prHistory,
+          [ex.name]: [...(prHistory[ex.name]||[]), {date:dateStr, oneRM:calc1RM, wentToFailure:anyFailure}]
+        };
+        setPrHistory(newPrHist);
+        try{await window.storage.set("gym_pr_history_v4",JSON.stringify(newPrHist));}catch(e){}
+      }
+    }
+    setAllLogs(newLogs);
+    try{await window.storage.set("gym_logs_v4",JSON.stringify(newLogs));}catch(e){}
+    const isLastEx=activeExIdx===session.exercises.length-1;
+    if(isLastEx) setSessionComplete(true);
+    else { setActiveExIdx(i=>i+1); setActiveSetIdx(0); setResting(false); }
+  }
+
+  function jumpToExercise(idx){
+    setActiveExIdx(idx);
+    setActiveSetIdx(0);
+    setResting(false);
+  }
+
+  function afterRest(){
+    setResting(false);
+  }
+
+  async function saveHistoryEdit(exName, logIdx, newSets) {
+    const updated = {...allLogs};
+    updated[exName] = updated[exName].map((entry, i) => {
+      if (i !== logIdx) return entry;
+      // Recalculate 1RM from edited sets
+      let calc1RM = null;
+      const validSets = newSets.filter(s=>s.reps&&s.weight);
+      if (validSets.length > 0) {
+        let best = 0;
+        validSets.forEach(s=>{
+          const w=parseFloat(s.weight), r=parseInt(s.reps);
+          if(w>0&&r>0&&r<37){ const est=w*(36/(37-r)); if(est>best) best=est; }
+        });
+        if(best>0) calc1RM = Math.round(best*10)/10;
+      }
+      return {...entry, sets: newSets, calc1RM};
+    });
+    setAllLogs(updated);
+    setEditingHistoryEntry(null);
+    try { await window.storage.set("gym_logs_v4", JSON.stringify(updated)); } catch(e) {}
+  }
+
+  const allHistory=Object.entries(allLogs).flatMap(([ex,logs])=>logs.map(l=>({exercise:ex,...l}))).reverse();
+  const filteredHistory=historyFilter==="All"?allHistory:allHistory.filter(e=>e.muscleGroup===historyFilter);
+  const prEntries=Object.entries(prs).sort((a,b)=>b[1]-a[1]);
+  function getMG(ex){
+    for(const[g,d]of Object.entries(MUSCLE_GROUPS))if(d.exercises.find(e=>e.name===ex))return g;
+    for(const[,cfg]of Object.entries(BIG_THREE))if(cfg.lift===ex)return cfg.group;
+    for(const[g,exs]of Object.entries(customExercises))if(exs.find(e=>e.name===ex))return g;
+    return "";
+  }
+
+  const hasSelection = selectedGroups.length > 0 || selectedBigThree.length > 0;
+
+  const css=`
+    @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@400;500;700&display=swap');
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+    body{background:#080810;}
+    .app{min-height:100vh;background:#080810;color:#eeeef5;font-family:'DM Sans',sans-serif;max-width:480px;margin:0 auto;padding-bottom:90px;}
+    .header{padding:24px 20px 10px;background:linear-gradient(180deg,#0e0e1a 0%,transparent 100%);position:sticky;top:0;z-index:50;backdrop-filter:blur(10px);}
+    .header-title{font-family:'Bebas Neue',sans-serif;font-size:2.4rem;letter-spacing:.04em;background:linear-gradient(90deg,#f59e0b,#ef4444);-webkit-background-clip:text;-webkit-text-fill-color:transparent;line-height:1;}
+    .header-sub{font-size:.67rem;color:#6666888;margin-top:2px;letter-spacing:.07em;text-transform:uppercase;}
+    .nav{display:flex;gap:4px;padding:10px 20px 12px;position:sticky;top:72px;z-index:9;background:#080810;}
+    .nav-btn{flex:1;padding:9px 0;border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-weight:700;font-size:.7rem;letter-spacing:.04em;cursor:pointer;transition:all .18s;background:#1a1a28;color:#7777aa;text-transform:uppercase;}
+    .nav-btn.active{background:linear-gradient(135deg,#f59e0b18,#ef444418);color:#f59e0b;border:1px solid #f59e0b33;}
+    .section{padding:0 18px;}
+    .label{font-size:.62rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:#6666888;margin-bottom:9px;}
+    .hero{padding:22px 18px 16px;}
+    .hero-title{font-family:'Bebas Neue',sans-serif;font-size:1.85rem;color:#eeeef5;line-height:1.15;margin-bottom:5px;}
+    .hero-sub{font-size:.8rem;color:#8888aa;line-height:1.55;}
+    .level-badge{display:inline-flex;align-items:center;gap:5px;background:#f59e0b12;border:1px solid #f59e0b28;border-radius:8px;padding:4px 10px;font-size:.72rem;color:#f59e0bcc;font-weight:700;margin-top:10px;}
+
+    /* Big Three grid */
+    .b3-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin-bottom:18px;}
+    .b3-card{border-radius:14px;padding:14px 10px 12px;border:2px solid #252538;background:#12121e;cursor:pointer;transition:all .18s;position:relative;overflow:hidden;text-align:center;}
+    .b3-card.selected{border-color:var(--gc);background:color-mix(in srgb,var(--gc) 10%,#0e0e1c);}
+    .b3-card-icon{font-size:1.4rem;margin-bottom:4px;}
+    .b3-card-name{font-weight:700;font-size:.78rem;color:#ccccdd;line-height:1.2;}
+    .b3-card.selected .b3-card-name{color:var(--gc);}
+    .b3-prog-label{font-size:.6rem;color:#7777aa;margin-top:3px;}
+    .b3-card.selected .b3-prog-label{color:color-mix(in srgb,var(--gc) 60%,#7777aa);}
+    .b3-check{position:absolute;top:7px;right:7px;width:18px;height:18px;border-radius:50%;background:var(--gc);display:flex;align-items:center;justify-content:center;font-size:.58rem;color:#000;font-weight:900;opacity:0;transition:opacity .15s;}
+    .b3-card.selected .b3-check{opacity:1;}
+    .b3-prog-btn{position:absolute;bottom:0;left:0;right:0;padding:5px;background:color-mix(in srgb,var(--gc) 18%,transparent);border:none;font-family:'DM Sans',sans-serif;font-size:.6rem;font-weight:700;color:var(--gc);cursor:pointer;opacity:0;transition:opacity .15s;letter-spacing:.04em;}
+    .b3-card.selected .b3-prog-btn{opacity:1;}
+
+    /* Muscle group grid */
+    .group-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-bottom:18px;}
+    .group-card{border-radius:14px;padding:15px 13px;border:2px solid #252538;background:#12121e;cursor:pointer;transition:all .18s;position:relative;overflow:hidden;}
+    .group-card.selected{border-color:var(--gc);background:color-mix(in srgb,var(--gc) 10%,#0e0e1c);}
+    .group-card-icon{font-size:1.4rem;margin-bottom:5px;}
+    .group-card-name{font-weight:700;font-size:.88rem;color:#ccccdd;}
+    .group-card-meta{font-size:.63rem;color:#7777aa;margin-top:3px;}
+    .group-card.selected .group-card-name{color:var(--gc);}
+    .group-check{position:absolute;top:9px;right:9px;width:20px;height:20px;border-radius:50%;background:var(--gc);display:flex;align-items:center;justify-content:center;font-size:.63rem;color:#000;font-weight:900;opacity:0;transition:opacity .15s;}
+    .group-card.selected .group-check{opacity:1;}
+
+    .build-btn{width:100%;padding:15px;border:none;border-radius:14px;background:linear-gradient(135deg,#f59e0b,#ef4444);color:#fff;font-family:'Bebas Neue',sans-serif;font-size:1.25rem;letter-spacing:.1em;cursor:pointer;box-shadow:0 4px 24px rgba(239,68,68,.2);transition:opacity .15s,transform .1s;}
+    .build-btn:active{transform:scale(.98);}
+    .build-btn:disabled{opacity:.18;cursor:default;}
+
+    /* Session */
+    .session-topbar{padding:12px 18px 8px;}
+    .progress-wrap{height:3px;background:#1e1e30;border-radius:3px;margin-bottom:10px;overflow:hidden;}
+    .progress-bar{height:100%;background:linear-gradient(90deg,#f59e0b,#ef4444);border-radius:3px;transition:width .5s ease;}
+    .session-meta{display:flex;gap:16px;font-size:.7rem;color:#7777aa;}
+    .session-meta span b{color:#aaaacc;font-weight:700;}
+    .ex-card{background:#0e0e1c;border-radius:16px;padding:17px 15px;margin:0 18px 13px;border:1px solid #252538;}
+    .ex-card-top{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:3px;}
+    .ex-name{font-weight:700;font-size:1.05rem;color:#eeeef5;line-height:1.2;flex:1;}
+    .ex-badge{font-size:.6rem;font-weight:700;padding:3px 8px;border-radius:20px;text-transform:uppercase;letter-spacing:.06em;white-space:nowrap;background:color-mix(in srgb,var(--gc) 15%,transparent);color:var(--gc);border:1px solid color-mix(in srgb,var(--gc) 28%,transparent);}
+    .b3-badge{font-size:.6rem;font-weight:700;padding:3px 8px;border-radius:20px;text-transform:uppercase;letter-spacing:.06em;background:#f59e0b18;color:#f59e0b;border:1px solid #f59e0b33;}
+    .rep-range-hint{font-size:.7rem;color:#8888aa;margin-bottom:10px;}
+    .program-pill{display:flex;align-items:center;gap:7px;background:#f59e0b0e;border:1px solid #f59e0b28;border-radius:10px;padding:8px 12px;font-size:.78rem;color:#f59e0bcc;margin-bottom:12px;}
+    .overload-pill{display:flex;align-items:flex-start;gap:7px;background:#f59e0b0e;border:1px solid #f59e0b22;border-radius:10px;padding:9px 12px;font-size:.77rem;color:#f59e0bbb;margin-bottom:12px;line-height:1.45;}
+    .last-session-pill{display:flex;align-items:flex-start;gap:7px;background:#3b82f608;border:1px solid #3b82f622;border-radius:10px;padding:9px 12px;font-size:.77rem;color:#3b82f6bb;margin-bottom:12px;line-height:1.5;}
+    .set-dots{display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap;}
+    .set-dot{width:34px;height:34px;border-radius:9px;display:flex;align-items:center;justify-content:center;font-family:'Bebas Neue',sans-serif;font-size:.95rem;border:1.5px solid #2a2a40;color:#6666888;background:#12121e;transition:all .2s;}
+    .set-dot.done{background:#0d1a10;border-color:#22c55e55;color:#22c55e;}
+    .set-dot.active{background:linear-gradient(135deg,#f59e0b,#ef4444);border-color:transparent;color:#fff;box-shadow:0 2px 10px rgba(239,68,68,.3);}
+    .active-set-title{font-size:.63rem;font-weight:700;color:#8888aa;letter-spacing:.1em;text-transform:uppercase;margin-bottom:8px;}
+    .inputs-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;}
+    .input-wrap{display:flex;flex-direction:column;gap:4px;}
+    .input-label{font-size:.6rem;font-weight:700;color:#8888aa;text-transform:uppercase;letter-spacing:.09em;}
+    .set-input{background:#0c0c18;border:1.5px solid #252538;border-radius:11px;color:#eeeef5;font-family:'DM Sans',sans-serif;font-size:1.15rem;font-weight:700;padding:12px 10px;width:100%;text-align:center;transition:border .15s;}
+    .set-input:focus{outline:none;border-color:#f59e0b60;}
+    .set-input::placeholder{color:#3a3a55;font-size:.8rem;font-weight:400;}
+    .btn-row{display:grid;grid-template-columns:1fr auto;gap:9px;}
+    .log-btn{padding:14px;border:none;border-radius:12px;background:linear-gradient(135deg,#f59e0b,#ef4444);color:#fff;font-family:'Bebas Neue',sans-serif;font-size:1.15rem;letter-spacing:.1em;cursor:pointer;transition:opacity .15s,transform .1s;}
+    .log-btn:active{transform:scale(.98);}
+    .log-btn:disabled{opacity:.18;cursor:default;}
+    .swap-btn{padding:14px 13px;border:1.5px solid #252538;border-radius:12px;background:#12121e;color:#8888aa;font-family:'DM Sans',sans-serif;font-size:.75rem;font-weight:700;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:2px;white-space:nowrap;}
+    .rest-card{background:#0e0e1c;border-radius:16px;padding:20px 15px;margin:0 18px 13px;border:1px solid #252538;text-align:center;}
+    .rest-logged{font-weight:700;font-size:.95rem;color:#22c55e;margin-bottom:4px;}
+    .rest-next{font-size:.75rem;color:#8888aa;margin-top:12px;}
+    .upcoming-section{padding:0 18px;}
+    .upcoming-item{display:flex;align-items:center;gap:11px;padding:10px 0;border-bottom:1px solid #181828;}
+    .upcoming-item:last-child{border-bottom:none;}
+    .upcoming-num{font-family:'Bebas Neue',sans-serif;font-size:1rem;color:#44447a;min-width:22px;}
+    .upcoming-info{flex:1;}
+    .upcoming-name{font-size:.85rem;font-weight:600;color:#aaaacc;}
+    .upcoming-type{font-size:.65rem;color:#7777aa;margin-top:1px;}
+    .upcoming-right{display:flex;align-items:center;gap:8px;}
+    .upcoming-sets{font-size:.7rem;color:#7777aa;white-space:nowrap;}
+    .upcoming-swap{padding:4px 9px;background:#1a1a28;border:1px solid #252538;border-radius:6px;color:#8888aa;font-size:.65rem;font-weight:700;cursor:pointer;font-family:'DM Sans',sans-serif;}
+    .upcoming-item.completed .upcoming-name{color:#22c55e99;}
+    .upcoming-item.completed .upcoming-num{color:#22c55e66;}
+    .complete-wrap{padding:44px 20px 20px;text-align:center;}
+    .complete-icon{font-size:3.8rem;margin-bottom:14px;}
+    .complete-title{font-family:'Bebas Neue',sans-serif;font-size:2.3rem;letter-spacing:.05em;background:linear-gradient(90deg,#f59e0b,#ef4444);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:6px;}
+    .complete-sub{font-size:.82rem;color:#8888aa;margin-bottom:26px;}
+    .complete-stats{display:flex;justify-content:center;gap:30px;margin-bottom:22px;}
+    .c-stat-val{font-family:'Bebas Neue',sans-serif;font-size:2rem;color:#f59e0b;line-height:1;}
+    .c-stat-label{font-size:.63rem;color:#8888aa;text-transform:uppercase;letter-spacing:.08em;}
+    .pr-earned{background:#f59e0b0e;border:1px solid #f59e0b28;border-radius:12px;padding:12px 16px;margin-bottom:20px;text-align:left;}
+    .pr-earned-title{font-size:.65rem;font-weight:700;color:#f59e0baa;text-transform:uppercase;letter-spacing:.1em;margin-bottom:7px;}
+    .pr-earned-item{font-size:.82rem;color:#eeeef5;font-weight:600;padding:2px 0;}
+    .done-btn{width:100%;padding:15px;border:none;border-radius:14px;background:linear-gradient(135deg,#f59e0b,#ef4444);color:#fff;font-family:'Bebas Neue',sans-serif;font-size:1.2rem;letter-spacing:.1em;cursor:pointer;}
+    .filter-scroll{display:flex;gap:6px;overflow-x:auto;padding-bottom:4px;margin-bottom:14px;scrollbar-width:none;}
+    .filter-scroll::-webkit-scrollbar{display:none;}
+    .filter-chip{padding:6px 12px;border-radius:100px;border:1.5px solid #252538;background:#12121e;color:#8888aa;font-family:'DM Sans',sans-serif;font-weight:700;font-size:.72rem;cursor:pointer;white-space:nowrap;flex-shrink:0;transition:all .15s;}
+    .filter-chip.active{border-color:#f59e0b;color:#f59e0b;background:#f59e0b0c;}
+    .h-card{background:#12121e;border-radius:13px;padding:13px 15px;margin-bottom:8px;border:1px solid #252538;}
+    .h-name{font-weight:700;font-size:.93rem;margin-bottom:3px;}
+    .h-meta{font-size:.67rem;color:#7777aa;margin-bottom:8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;}
+    .h-prog-tag{background:#f59e0b14;border:1px solid #f59e0b28;border-radius:5px;padding:1px 7px;color:#f59e0b99;font-weight:600;}
+    .h-sets{display:flex;gap:5px;flex-wrap:wrap;}
+    .h-chip{background:#1e1e30;border-radius:7px;padding:4px 9px;font-size:.74rem;color:#8888aa;}
+    .h-chip strong{color:#ddddee;}
+    .pr-badge{background:linear-gradient(135deg,#f59e0b,#ef4444);color:#fff;font-size:.55rem;font-weight:800;padding:2px 7px;border-radius:20px;letter-spacing:.08em;text-transform:uppercase;margin-left:8px;vertical-align:middle;}
+    .pr-sec-label{font-family:'Bebas Neue',sans-serif;font-size:.95rem;color:#6666888;letter-spacing:.08em;margin:16px 0 8px;}
+    .pr-card{background:linear-gradient(135deg,#12100a,#100a0a);border:1px solid #f59e0b1c;border-radius:13px;padding:12px 15px;margin-bottom:7px;display:flex;justify-content:space-between;align-items:center;}
+    .pr-name{font-weight:700;font-size:.88rem;color:#ddddf0;margin-bottom:2px;}
+    .pr-sub{font-size:.6rem;color:#8888aa;text-transform:uppercase;letter-spacing:.07em;}
+    .pr-val{font-family:'Bebas Neue',sans-serif;font-size:1.5rem;color:#f59e0b;line-height:1;}
+    .empty{text-align:center;color:#44447a;padding:50px 20px;font-size:.86rem;line-height:1.85;}
+    .drag-handle{cursor:grab;padding:0 4px;color:#7777aa;font-size:1.1rem;touch-action:none;user-select:none;}
+    .drag-handle:active{cursor:grabbing;}
+    input,textarea{outline:none;}
+  `;
+
+  return (
+    <>
+      <style>{css}</style>
+      <div className="app">
+
+        <div className="header">
+          <div className="header-title">Iron Log</div>
+          <div className="header-sub">Intermediate · 3–4 Days/Week · Compound-First</div>
+        </div>
+
+        {screen!=="session" && (
+          <div className="nav">
+            {[["home","🏠 Home"],["history","📊 History"],["prs","🏆 PRs"],["data","💾 Data"]].map(([id,label])=>(
+              <button key={id} className={`nav-btn${screen===id?" active":""}`} onClick={()=>setScreen(id)}>{label}</button>
+            ))}
+          </div>
+        )}
+
+        {/* ── HOME ── */}
+        {screen==="home" && (
+          <>
+            {/* Resume Session banner */}
+            {savedSession && (
+              <div style={{margin:"0 18px 14px",background:"linear-gradient(135deg,#f59e0b0e,#ef44440e)",border:"1.5px solid #f59e0b33",borderRadius:14,padding:"13px 15px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}>
+                <div>
+                  <div style={{fontSize:"0.65rem",fontWeight:700,color:"#f59e0b88",textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:2}}>Session Paused</div>
+                  <div style={{fontWeight:700,fontSize:"0.92rem",color:"#eeeef5"}}>{savedSession.session.title||"Workout"}</div>
+                  <div style={{fontSize:"0.72rem",color:"#8888aa",marginTop:1}}>Exercise {savedSession.activeExIdx+1} of {savedSession.session.exercises.length}</div>
+                </div>
+                <div style={{display:"flex",gap:8}}>
+                  <button onClick={()=>setSavedSession(null)}
+                    style={{padding:"8px 10px",borderRadius:9,border:"1px solid #ef444433",background:"none",color:"#ef444488",fontFamily:"DM Sans,sans-serif",fontWeight:700,fontSize:"0.72rem",cursor:"pointer"}}>
+                    Discard
+                  </button>
+                  <button onClick={resumeSession}
+                    style={{padding:"8px 14px",borderRadius:9,border:"none",background:"linear-gradient(135deg,#f59e0b,#ef4444)",color:"#fff",fontFamily:"Bebas Neue,sans-serif",fontSize:"0.95rem",letterSpacing:"0.06em",cursor:"pointer"}}>
+                    Resume →
+                  </button>
+                </div>
+              </div>
+            )}
+            <div className="hero">
+              <div className="hero-title">What are we training today?</div>
+              <div className="hero-sub">Select the Big Three and / or muscle groups. Big Three always go first in your session.</div>
+              <div className="level-badge">⚡ Intermediate · Compound-First · Progressive Overload</div>
+            </div>
+            <div className="section">
+
+              {/* Big Three */}
+              <div className="label">The Big Three</div>
+              <div className="b3-grid">
+                {BIG_THREE_KEYS.map(key=>{
+                  const cfg=BIG_THREE[key];
+                  const sel=selectedBigThree.includes(key);
+                  const prog=customPrograms[key];
+                  return (
+                    <div key={key} className={`b3-card${sel?" selected":""}`} style={{"--gc":cfg.color}}
+                      onClick={()=>toggleBigThree(key)}>
+                      <div className="b3-check">✓</div>
+                      <div className="b3-card-icon">{cfg.icon}</div>
+                      <div className="b3-card-name">{key}</div>
+                      <div className="b3-prog-label">
+                        {prog ? `📋 ${prog.name}` : `${DEFAULT_BIG3.sets}×${DEFAULT_BIG3.repRange}`}
+                      </div>
+                      {sel && (
+                        <button className="b3-prog-btn" style={{"--gc":cfg.color}}
+                          onClick={e=>{e.stopPropagation();setProgramKey(key);}}>
+                          {prog?"edit program":"set program"}
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Muscle Groups */}
+              <div className="label">Muscle Groups</div>
+              <div className="group-grid">
+                {ALL_GROUPS.map(g=>{
+                  const d=MUSCLE_GROUPS[g],sel=selectedGroups.includes(g);
+                  const nc=d.exercises.filter(e=>e.compound).length;
+                  return (
+                    <div key={g} className={`group-card${sel?" selected":""}`} style={{"--gc":d.color}} onClick={()=>toggleGroup(g)}>
+                      <div className="group-check">✓</div>
+                      <div className="group-card-icon">{d.icon}</div>
+                      <div className="group-card-name">{g}</div>
+                      <div className="group-card-meta">{nc} compound · {d.exercises.length-nc} isolation</div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <button className="build-btn" disabled={!hasSelection} onClick={startSession}>
+                {!hasSelection ? "Select Something to Train"
+                  : `Build Session${selectedBigThree.length>0?" — "+selectedBigThree.join(", "):""}${selectedGroups.length>0?(selectedBigThree.length>0?" + ":"")+selectedGroups.join(" + "):""} →`}
+              </button>
+            </div>
+          </>
+        )}
+
+        {/* ── SESSION ── */}
+        {screen==="session" && session && !sessionComplete && (()=>{
+          const ex=session.exercises[activeExIdx];
+          const gc=MUSCLE_GROUPS[ex.group]?.color||BIG_THREE_KEYS.map(k=>BIG_THREE[k]).find(c=>c.lift===ex.name)?.color||"#f59e0b";
+          const completedEx=session.exercises.slice(0,activeExIdx).length;
+          const progress=(completedEx/session.exercises.length)*100;
+          const setsLoggedThisEx=Array.from({length:ex.sets},(_,i)=>getInput(activeExIdx,i,"reps")&&getInput(activeExIdx,i,"weight")).filter(Boolean).length;
+          const canLogSet=!resting&&getInput(activeExIdx,activeSetIdx,"reps")&&getInput(activeExIdx,activeSetIdx,"weight");
+          const onLastSet=activeSetIdx===ex.sets-1;
+
+          return (
+            <>
+              <div className="session-topbar">
+                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6}}>
+                  <button onClick={pauseSession}
+                    style={{background:"none",border:"none",color:"#7777aa",fontFamily:"DM Sans,sans-serif",fontWeight:700,fontSize:"0.78rem",cursor:"pointer",padding:"2px 0",display:"flex",alignItems:"center",gap:4}}>
+                    ← Home
+                  </button>
+                  <div style={{fontSize:"0.72rem",fontWeight:700,color:"#aaaacc"}}>{session.title||"Workout"}</div>
+                  <div style={{width:50}}/>
+                </div>
+                <div className="progress-wrap"><div className="progress-bar" style={{width:`${progress}%`}}/></div>
+                <div className="session-meta">
+                  <span>Exercise <b>{activeExIdx+1}/{session.exercises.length}</b></span>
+                  <span>Set <b>{activeSetIdx+1}/{ex.sets}</b></span>
+                  <span>~<b>{session.estMinutes} min</b></span>
+                </div>
+              </div>
+
+              {/* Active exercise card */}
+              <div className="ex-card" style={{"--gc":gc}}>
+                <div className="ex-card-top">
+                  <div className="ex-name">{ex.name}</div>
+                  {ex.isBigThree
+                    ? <div className="b3-badge">Big Three</div>
+                    : <div className="ex-badge" style={{"--gc":gc}}>{ex.compound?"Compound":"Isolation"}</div>}
+                </div>
+                <div className="rep-range-hint">Target: {ex.sets} sets × {ex.repRange} reps &nbsp;·&nbsp; {MUSCLE_GROUPS[ex.group]?.icon} {ex.group}</div>
+
+                {ex.customProgram && (
+                  <div className="program-pill">
+                    <span>📋</span>
+                    <div style={{flex:1}}>
+                      <div><strong>{ex.customProgram.name}</strong>{ex.customProgram.note?` · ${ex.customProgram.note}`:""}</div>
+                      {ex.customProgram.calcWeight && (
+                        <div style={{marginTop:5,display:"flex",alignItems:"baseline",gap:6}}>
+                          <span style={{fontSize:"0.68rem",color:"#f59e0b66"}}>Working weight ({ex.customProgram.pct}% of {ex.customProgram.oneRM}lbs):</span>
+                          <span style={{fontFamily:"Bebas Neue,sans-serif",fontSize:"1.4rem",color:"#f59e0b",lineHeight:1}}>{ex.customProgram.calcWeight}</span>
+                          <span style={{fontSize:"0.68rem",color:"#f59e0b66"}}>lbs</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+                {!ex.customProgram && ex.suggestion && (
+                  <div className="overload-pill">
+                    <span>⚡</span>
+                    <span><strong>Overload target:</strong> {ex.suggestion.weight}lbs × {ex.suggestion.repRange} reps<br/><span style={{fontSize:".7rem",opacity:.7}}>{ex.suggestion.note}</span></span>
+                  </div>
+                )}
+
+                {/* #6 — Last session data */}
+                {(()=>{
+                  const hist = allLogs[ex.name];
+                  const last = hist?.[hist.length-1];
+                  if (!last?.sets?.length) return null;
+                  return (
+                    <div className="last-session-pill">
+                      <span>📅</span>
+                      <div>
+                        <div style={{fontWeight:700,fontSize:"0.72rem",marginBottom:3}}>Last session · {last.date}</div>
+                        <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+                          {last.sets.map((s,i)=>(
+                            <span key={i} style={{background:"#3b82f614",borderRadius:6,padding:"2px 7px",fontSize:"0.7rem"}}>
+                              {s.reps} × {s.weight}lbs
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* Set dots + +/- */}
+                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
+                  <div className="set-dots" style={{marginBottom:0,flex:1,flexWrap:"wrap"}}>
+                    {Array.from({length:ex.sets}).map((_,i)=>{
+                      const logged=!!(getInput(activeExIdx,i,"reps")&&getInput(activeExIdx,i,"weight"));
+                      return (
+                        <div key={i}
+                          className={`set-dot${logged&&i<activeSetIdx?" done":i===activeSetIdx?" active":logged?" done":""}`}
+                          style={{cursor:i<=activeSetIdx?"pointer":"default"}}
+                          onClick={()=>{ if(i<=activeSetIdx){ setActiveSetIdx(i); setResting(false); } }}>
+                          {logged&&i<activeSetIdx?"✓":i+1}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div style={{display:"flex",alignItems:"center",gap:6,marginLeft:10,flexShrink:0}}>
+                    <button disabled={ex.sets<=1}
+                      onClick={()=>{
+                        const newSets=Math.max(1,ex.sets-1);
+                        const updated=[...session.exercises];
+                        updated[activeExIdx]={...ex,sets:newSets};
+                        const ni={...setInputs};
+                        delete ni[`${activeExIdx}-${newSets}-reps`];
+                        delete ni[`${activeExIdx}-${newSets}-weight`];
+                        setSetInputs(ni);
+                        if(activeSetIdx>=newSets) setActiveSetIdx(newSets-1);
+                        setSession({...session,exercises:updated,totalSets:session.totalSets-1,estMinutes:Math.round((session.totalSets-1)*3.5)});
+                      }}
+                      style={{width:30,height:30,borderRadius:8,border:"1.5px solid #252538",background:"#12121e",color:ex.sets<=1?"#252538":"#8888aa",fontSize:"1.1rem",cursor:ex.sets<=1?"default":"pointer",display:"flex",alignItems:"center",justifyContent:"center",lineHeight:1}}>−</button>
+                    <button onClick={()=>{
+                        const updated=[...session.exercises];
+                        updated[activeExIdx]={...ex,sets:ex.sets+1};
+                        setSession({...session,exercises:updated,totalSets:session.totalSets+1,estMinutes:Math.round((session.totalSets+1)*3.5)});
+                      }}
+                      style={{width:30,height:30,borderRadius:8,border:"1.5px solid #f59e0b33",background:"#f59e0b0e",color:"#f59e0b",fontSize:"1.1rem",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",lineHeight:1}}>+</button>
+                  </div>
+                </div>
+
+                {/* Failure question — shown immediately after logging a set */}
+                {showFailureQ && (
+                  <div style={{background:"#12121e",border:"1.5px solid #f59e0b33",borderRadius:12,padding:"13px 14px",marginBottom:12}}>
+                    <div style={{fontSize:"0.68rem",fontWeight:700,color:"#f59e0b88",textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:5}}>Set {activeSetIdx+1} — Quick Check</div>
+                    <div style={{fontSize:"0.88rem",fontWeight:700,color:"#eeeef5",marginBottom:10}}>Did you go to failure?</div>
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+                      <button onClick={()=>afterFailureQ(true)}
+                        style={{padding:"11px",borderRadius:10,border:"1.5px solid #22c55e44",background:"#0d1a10",color:"#22c55e",fontFamily:"Bebas Neue,sans-serif",fontSize:"0.95rem",letterSpacing:"0.06em",cursor:"pointer"}}>
+                        🔥 Yes
+                      </button>
+                      <button onClick={()=>afterFailureQ(false)}
+                        style={{padding:"11px",borderRadius:10,border:"1.5px solid #252538",background:"#12121e",color:"#8888aa",fontFamily:"Bebas Neue,sans-serif",fontSize:"0.95rem",letterSpacing:"0.06em",cursor:"pointer"}}>
+                        ✕ No
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Rest timer inline */}
+                {resting && !showFailureQ && (
+                  <div style={{background:"#0c0c18",borderRadius:12,padding:"12px",marginBottom:12,textAlign:"center"}}>
+                    <div style={{fontSize:"0.78rem",color:"#22c55e",fontWeight:700,marginBottom:6}}>
+                      ✓ Set {activeSetIdx} logged — {getInput(activeExIdx,activeSetIdx-1,"reps")} reps @ {getInput(activeExIdx,activeSetIdx-1,"weight")}lbs
+                    </div>
+                    <RestTimer isCompound={ex.compound} onDone={afterRest}/>
+                  </div>
+                )}
+
+                {/* Current set inputs */}
+                {!resting && !showFailureQ && (
+                  <>
+                    <div className="active-set-title">Set {activeSetIdx+1} of {ex.sets}</div>
+                    <div className="inputs-row">
+                      <div className="input-wrap">
+                        <div className="input-label">Reps</div>
+                        <input className="set-input" type="number" inputMode="decimal"
+                          placeholder={ex.customProgram?.repRange||ex.suggestion?.repRange?.split("–")[0]||"reps"}
+                          value={getInput(activeExIdx,activeSetIdx,"reps")}
+                          onChange={e=>putInput(activeExIdx,activeSetIdx,"reps",e.target.value)}/>
+                      </div>
+                      <div className="input-wrap">
+                        <div className="input-label">Weight (lbs)</div>
+                        <input className="set-input" type="number" inputMode="decimal"
+                          placeholder={ex.suggestion?`${ex.suggestion.weight}`:"lbs"}
+                          value={getInput(activeExIdx,activeSetIdx,"weight")}
+                          onChange={e=>putInput(activeExIdx,activeSetIdx,"weight",e.target.value)}/>
+                      </div>
+                    </div>
+                    <div className="btn-row">
+                      <button className="log-btn" disabled={!canLogSet} onClick={logSet}>
+                        {onLastSet?"Log Final Set ✓":`Log Set ${activeSetIdx+1} →`}
+                      </button>
+                      <button className="swap-btn" onClick={()=>setEditExIdx(activeExIdx)}>
+                        <span style={{fontSize:"1.1rem"}}>✏️</span><span>Edit</span>
+                      </button>
+                    </div>
+                  </>
+                )}
+
+                {/* Done with Exercise button */}
+                {setsLoggedThisEx > 0 && !showFailureQ && (
+                  <button onClick={doneExercise}
+                    style={{width:"100%",marginTop:10,padding:"13px",border:"1.5px solid #22c55e44",borderRadius:12,background:"#0d1a10",color:"#22c55e",fontFamily:"Bebas Neue,sans-serif",fontSize:"1.1rem",letterSpacing:"0.08em",cursor:"pointer"}}>
+                    ✓ Done with {ex.name.split(" ").slice(-1)[0]} — Next Exercise →
+                  </button>
+                )}
+              </div>
+
+              {/* #2 #3 #4 — Full exercise list: completed + upcoming, draggable, with add button */}
+              <div className="upcoming-section">
+                <div className="label" style={{marginBottom:6}}>All Exercises — tap to jump · hold to reorder</div>
+                {session.exercises.map((e,i)=>{
+                  const isDone = i < activeExIdx;
+                  const isActive = i === activeExIdx;
+                  return (
+                    <div key={i}
+                      className={`upcoming-item${isDone?" completed":""}`}
+                      draggable={!isActive}
+                      onDragStart={ev=>{ ev.dataTransfer.effectAllowed="move"; ev.dataTransfer.setData("text/plain",String(i)); }}
+                      onDragOver={ev=>{ ev.preventDefault(); ev.dataTransfer.dropEffect="move"; }}
+                      onDrop={ev=>{
+                        ev.preventDefault();
+                        const from=parseInt(ev.dataTransfer.getData("text/plain"));
+                        if(from===i) return;
+                        const exs=[...session.exercises];
+                        const [moved]=exs.splice(from,1);
+                        exs.splice(i,0,moved);
+                        // Remap activeExIdx
+                        let newActive=activeExIdx;
+                        if(from===activeExIdx) newActive=i;
+                        else if(from<activeExIdx&&i>=activeExIdx) newActive=activeExIdx-1;
+                        else if(from>activeExIdx&&i<=activeExIdx) newActive=activeExIdx+1;
+                        setActiveExIdx(newActive);
+                        setSession({...session,exercises:exs});
+                      }}
+                      style={{cursor:isActive?"default":"pointer",opacity:1,background:isActive?"#f59e0b08":"transparent",borderRadius:isActive?8:0,padding:isActive?"10px 6px":"10px 0"}}
+                      onClick={()=>{ if(!isActive) jumpToExercise(i); }}>
+                      <div className="drag-handle" onTouchStart={e=>e.stopPropagation()}>⠿</div>
+                      <div className="upcoming-num" style={{color:isDone?"#22c55e55":isActive?"#f59e0b":"#44447a"}}>
+                        {isDone?"✓":i+1}
+                      </div>
+                      <div className="upcoming-info" style={{flex:1}}>
+                        <div className="upcoming-name" style={{color:isDone?"#22c55e88":isActive?"#eeeef5":"#aaaacc"}}>
+                          {e.name}
+                          {isActive && <span style={{fontSize:".6rem",color:"#f59e0b",marginLeft:6,fontWeight:700}}>← NOW</span>}
+                          {e.customProgram&&<span style={{fontSize:".62rem",color:"#f59e0b88",marginLeft:6}}>📋 {e.customProgram.name}</span>}
+                        </div>
+                        <div className="upcoming-type">{e.isBigThree?"Big Three":e.compound?"Compound":"Isolation"} · {MUSCLE_GROUPS[e.group]?.icon} {e.group}</div>
+                      </div>
+                      <div className="upcoming-right">
+                        <div className="upcoming-sets">{e.sets}×{e.repRange}</div>
+                        {!isActive && <button className="upcoming-swap" onClick={ev=>{ev.stopPropagation();setEditExIdx(i);}}>✏️</button>}
+                        {!isActive && <button className="upcoming-swap" style={{color:"#ef444466",borderColor:"#ef444422"}}
+                          onClick={ev=>{ev.stopPropagation();handleEditEx({action:"delete",idx:i});}}>✕</button>}
+                      </div>
+                    </div>
+                  );
+                })}
+
+                {/* #4 — Add exercise button */}
+                <div style={{paddingTop:10,paddingBottom:4}}>
+                  {addingExercise ? (
+                    <div style={{background:"#12121e",borderRadius:12,padding:"13px",border:"1px solid #252538"}}>
+                      <div style={{fontSize:"0.6rem",fontWeight:700,color:"#8888aa",textTransform:"uppercase",letterSpacing:"0.09em",marginBottom:7}}>Add Exercise</div>
+                      <input
+                        autoFocus
+                        value={addExName}
+                        onChange={e=>setAddExName(e.target.value)}
+                        placeholder="Exercise name..."
+                        style={{width:"100%",background:"#0c0c18",border:"1.5px solid #252538",borderRadius:10,color:"#eeeef5",fontFamily:"DM Sans,sans-serif",fontSize:"0.9rem",padding:"10px 12px",marginBottom:8}}
+                      />
+                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:7,marginBottom:8}}>
+                        {[[true,"🏋️","Compound"],[false,"🎯","Isolation"]].map(([val,icon,label])=>(
+                          <button key={label} onClick={()=>setAddExCompound(val)}
+                            style={{padding:"8px",borderRadius:9,border:`1.5px solid ${addExCompound===val?"#f59e0b":"#252538"}`,background:addExCompound===val?"#f59e0b0e":"#14141f",color:addExCompound===val?"#f59e0b":"#8888aa",fontFamily:"DM Sans,sans-serif",fontWeight:700,fontSize:"0.78rem",cursor:"pointer"}}>
+                            {icon} {label}
+                          </button>
+                        ))}
+                      </div>
+                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:7}}>
+                        <button onClick={()=>{setAddingExercise(false);setAddExName("");}}
+                          style={{padding:"10px",borderRadius:10,border:"1px solid #252538",background:"#14141f",color:"#8888aa",fontFamily:"DM Sans,sans-serif",fontWeight:700,fontSize:"0.82rem",cursor:"pointer"}}>
+                          Cancel
+                        </button>
+                        <button disabled={!addExName.trim()} onClick={()=>{
+                            if(!addExName.trim()) return;
+                            const group = session.exercises[activeExIdx]?.group || "Chest";
+                            const newEx = {name:addExName.trim(),compound:addExCompound,group,sets:addExCompound?4:3,repRange:addExCompound?"6–10":"10–15",alts:[],customProgram:null,isBigThree:false,suggestion:getSuggestion({name:addExName.trim()},allLogs,addExCompound)};
+                            saveCustomExercise(group,addExName.trim(),addExCompound);
+                            setSession({...session,exercises:[...session.exercises,newEx],totalSets:session.totalSets+(addExCompound?4:3),estMinutes:Math.round((session.totalSets+(addExCompound?4:3))*3.5)});
+                            setAddingExercise(false);setAddExName("");
+                          }}
+                          style={{padding:"10px",borderRadius:10,border:"none",background:addExName.trim()?"linear-gradient(135deg,#f59e0b,#ef4444)":"#14141f",color:addExName.trim()?"#fff":"#2a2a40",fontFamily:"Bebas Neue,sans-serif",fontSize:"0.95rem",letterSpacing:"0.06em",cursor:addExName.trim()?"pointer":"default"}}>
+                          Add →
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button onClick={()=>setAddingExercise(true)}
+                      style={{width:"100%",padding:"11px",border:"1.5px dashed #252538",borderRadius:11,background:"transparent",color:"#7777aa",fontFamily:"DM Sans,sans-serif",fontWeight:700,fontSize:"0.82rem",cursor:"pointer",letterSpacing:"0.04em"}}>
+                      + Add Another Exercise
+                    </button>
+                  )}
+                </div>
+              </div>
+            </>
+          );
+        })()}
+
+        {/* ── SESSION COMPLETE ── */}
+        {screen==="session" && sessionComplete && (
+          <div className="complete-wrap">
+            <div className="complete-icon">🔥</div>
+            <div className="complete-title">Session Complete!</div>
+            <div className="complete-sub">All sets logged. PRs and overload targets updated for next time.</div>
+            <div className="complete-stats">
+              <div><div className="c-stat-val">{session.exercises.length}</div><div className="c-stat-label">Exercises</div></div>
+              <div><div className="c-stat-val">{session.totalSets}</div><div className="c-stat-label">Total Sets</div></div>
+              <div><div className="c-stat-val">~{session.estMinutes}</div><div className="c-stat-label">Minutes</div></div>
+            </div>
+            {newPRs.length>0&&(
+              <div className="pr-earned">
+                <div className="pr-earned-title">🔥 New PRs This Session</div>
+                {newPRs.map(n=><div key={n} className="pr-earned-item">· {n}</div>)}
+              </div>
+            )}
+            <button className="done-btn" onClick={()=>{setScreen("home");setSelectedGroups([]);setSelectedBigThree([]);}}>Back to Home</button>
+          </div>
+        )}
+
+        {/* ── HISTORY ── */}
+        {screen==="history" && (()=>{
+          // Build session groups: key = "title|||date"
+          const sessionMap = {};
+          Object.entries(allLogs).forEach(([ex, logs]) => {
+            logs.forEach((l, i) => {
+              const title = l.sessionTitle || "Workout";
+              const key   = `${title}|||${l.date}`;
+              if (!sessionMap[key]) sessionMap[key] = { title, date: l.date, exercises: [] };
+              sessionMap[key].exercises.push({ exercise: ex, ...l, _logIdx: i });
+            });
+          });
+          const sessionList = Object.entries(sessionMap)
+            .sort((a,b) => {
+              // sort by date desc (parse "12 Jan 2025")
+              const da = new Date(a[1].date); const db = new Date(b[1].date);
+              return db - da;
+            });
+
+          return (
+            <div className="section">
+              {/* View toggle */}
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginBottom:14}}>
+                {[["sessions","📅 By Session"],["exercises","🏋️ By Exercise"]].map(([v,label])=>(
+                  <button key={v} onClick={()=>setHistoryView(v)}
+                    style={{padding:"9px",borderRadius:10,border:`1.5px solid ${historyView===v?"#f59e0b":"#252538"}`,background:historyView===v?"#f59e0b0e":"#12121e",color:historyView===v?"#f59e0b":"#8888aa",fontFamily:"DM Sans,sans-serif",fontWeight:700,fontSize:"0.78rem",cursor:"pointer",transition:"all .15s"}}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              {/* ── BY SESSION ── */}
+              {historyView==="sessions" && (
+                sessionList.length===0
+                  ? <div className="empty">No sessions yet.<br/>Build your first session! 💪</div>
+                  : sessionList.map(([key, s])=>{
+                    const isExpanded = expandedSession === key;
+                    const groups = [...new Set(s.exercises.map(e=>e.muscleGroup).filter(Boolean))];
+                    return (
+                      <div key={key} style={{marginBottom:10}}>
+                        {/* Session header row */}
+                        <div
+                          onClick={()=>setExpandedSession(isExpanded?null:key)}
+                          style={{background:"#12121e",borderRadius:isExpanded?"13px 13px 0 0":13,border:"1px solid #252538",borderBottom:isExpanded?"1px solid #1a1a2a":"1px solid #252538",padding:"13px 15px",cursor:"pointer",display:"flex",alignItems:"center",gap:10}}>
+                          <div style={{flex:1}}>
+                            <div style={{fontWeight:700,fontSize:"0.95rem",color:"#eeeef5",marginBottom:3}}>{s.title}</div>
+                            <div style={{fontSize:"0.68rem",color:"#7777aa",display:"flex",gap:8,flexWrap:"wrap"}}>
+                              <span>📅 {s.date}</span>
+                              <span>{s.exercises.length} exercises</span>
+                              {groups.map(g=><span key={g}>{MUSCLE_GROUPS[g]?.icon} {g}</span>)}
+                            </div>
+                          </div>
+                          <div style={{display:"flex",alignItems:"center",gap:8}}>
+                            <button
+                              onClick={ev=>{ev.stopPropagation(); setConfirmDeleteSession(key);}}
+                              style={{padding:"5px 9px",borderRadius:7,border:"1px solid #ef444433",background:"none",color:"#ef444466",fontFamily:"DM Sans,sans-serif",fontWeight:700,fontSize:"0.7rem",cursor:"pointer"}}>
+                              🗑
+                            </button>
+                            <div style={{color:"#7777aa",fontSize:"0.85rem"}}>{isExpanded?"▲":"▼"}</div>
+                          </div>
+                        </div>
+
+                        {/* Expanded exercise list */}
+                        {isExpanded && (
+                          <div style={{background:"#0e0e18",border:"1px solid #252538",borderTop:"none",borderRadius:"0 0 13px 13px",padding:"10px 15px 14px"}}>
+                            {s.exercises.map((e,i)=>{
+                              const vs=(e.sets||[]).filter(s=>s.weight&&s.reps);
+                              const best=vs.length>0?Math.max(...vs.map(s=>parseFloat(s.weight)*(1+parseInt(s.reps)/30))):0;
+                              const isPR=best>0&&prs[e.exercise]&&Math.abs(best-prs[e.exercise])<.01;
+                              // Find the actual log index for this exercise entry
+                              const logIdx = (allLogs[e.exercise]||[]).findIndex(
+                                l=>l.date===e.date&&(l.sessionTitle||"")===(s.title||"")&&
+                                JSON.stringify(l.sets)===JSON.stringify(e.sets)
+                              );
+                              const isEditing = editingHistoryEntry?.exName===e.exercise && editingHistoryEntry?.logIdx===logIdx;
+                              return (
+                                <div key={i} style={{paddingTop:10,paddingBottom:10,borderBottom:i<s.exercises.length-1?"1px solid #1a1a28":"none"}}>
+                                  <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:4}}>
+                                    <div style={{fontWeight:700,fontSize:"0.88rem",color:"#ddddee"}}>
+                                      {e.exercise}{isPR&&<span className="pr-badge">PR 🔥</span>}
+                                    </div>
+                                    {logIdx>=0 && (
+                                      <button onClick={()=>{
+                                        if(isEditing){ setEditingHistoryEntry(null); return; }
+                                        setEditingHistoryEntry({
+                                          exName: e.exercise,
+                                          logIdx,
+                                          sets: (e.sets||[]).map(s=>({reps:s.reps||"",weight:s.weight||"",wentToFailure:s.wentToFailure||false}))
+                                        });
+                                      }}
+                                        style={{padding:"3px 9px",borderRadius:7,border:`1px solid ${isEditing?"#f59e0b44":"#252538"}`,background:isEditing?"#f59e0b0e":"#14141f",color:isEditing?"#f59e0b":"#8888aa",fontFamily:"DM Sans,sans-serif",fontWeight:700,fontSize:"0.68rem",cursor:"pointer",flexShrink:0,marginLeft:8}}>
+                                        {isEditing?"Cancel":"✏️ Edit"}
+                                      </button>
+                                    )}
+                                  </div>
+                                  <div style={{display:"flex",gap:8,marginBottom:6,fontSize:"0.65rem",color:"#7777aa",flexWrap:"wrap"}}>
+                                    <span>{MUSCLE_GROUPS[e.muscleGroup]?.icon} {e.muscleGroup}</span>
+                                    {e.program&&<span className="h-prog-tag">📋 {e.program}</span>}
+                                    <span>{e.sets?.length} sets</span>
+                                    {e.calc1RM&&<span style={{color:"#f59e0b88"}}>~{e.calc1RM}lbs 1RM</span>}
+                                  </div>
+
+                                  {!isEditing && (
+                                    <div className="h-sets">
+                                      {(e.sets||[]).map((s,j)=>(
+                                        <div className="h-chip" key={j} style={{position:"relative"}}>
+                                          <strong>{s.reps}</strong> × <strong>{s.weight}</strong>lbs
+                                          {s.wentToFailure&&<span style={{fontSize:"0.55rem",marginLeft:3}}>🔥</span>}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+
+                                  {isEditing && (
+                                    <div style={{background:"#12121e",borderRadius:10,padding:"12px",border:"1px solid #252538",marginTop:4}}>
+                                      <div style={{fontSize:"0.6rem",fontWeight:700,color:"#8888aa",textTransform:"uppercase",letterSpacing:"0.09em",marginBottom:8}}>Edit Sets</div>
+                                      {editingHistoryEntry.sets.map((s,si)=>(
+                                        <div key={si} style={{display:"flex",gap:7,alignItems:"center",marginBottom:7}}>
+                                          <div style={{fontSize:"0.7rem",color:"#7777aa",minWidth:16}}>S{si+1}</div>
+                                          <input
+                                            type="number" inputMode="decimal"
+                                            value={s.reps}
+                                            onChange={ev=>{
+                                              const ns=[...editingHistoryEntry.sets];
+                                              ns[si]={...ns[si],reps:ev.target.value};
+                                              setEditingHistoryEntry(p=>({...p,sets:ns}));
+                                            }}
+                                            placeholder="reps"
+                                            style={{flex:1,background:"#0c0c18",border:"1.5px solid #252538",borderRadius:8,color:"#eeeef5",fontFamily:"DM Sans,sans-serif",fontSize:"0.88rem",fontWeight:700,padding:"7px 8px",textAlign:"center"}}
+                                          />
+                                          <div style={{fontSize:"0.65rem",color:"#44447a"}}>×</div>
+                                          <input
+                                            type="number" inputMode="decimal"
+                                            value={s.weight}
+                                            onChange={ev=>{
+                                              const ns=[...editingHistoryEntry.sets];
+                                              ns[si]={...ns[si],weight:ev.target.value};
+                                              setEditingHistoryEntry(p=>({...p,sets:ns}));
+                                            }}
+                                            placeholder="lbs"
+                                            style={{flex:1,background:"#0c0c18",border:"1.5px solid #252538",borderRadius:8,color:"#eeeef5",fontFamily:"DM Sans,sans-serif",fontSize:"0.88rem",fontWeight:700,padding:"7px 8px",textAlign:"center"}}
+                                          />
+                                          <div style={{fontSize:"0.65rem",color:"#44447a"}}>lbs</div>
+                                          <button
+                                            onClick={()=>{
+                                              const ns=editingHistoryEntry.sets.filter((_,idx)=>idx!==si);
+                                              setEditingHistoryEntry(p=>({...p,sets:ns}));
+                                            }}
+                                            style={{width:24,height:24,borderRadius:6,border:"1px solid #ef444433",background:"none",color:"#ef444466",fontSize:"0.8rem",cursor:"pointer",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center"}}>✕</button>
+                                        </div>
+                                      ))}
+                                      <button
+                                        onClick={()=>setEditingHistoryEntry(p=>({...p,sets:[...p.sets,{reps:"",weight:"",wentToFailure:false}]}))}
+                                        style={{width:"100%",padding:"7px",border:"1.5px dashed #252538",borderRadius:8,background:"none",color:"#7777aa",fontFamily:"DM Sans,sans-serif",fontWeight:700,fontSize:"0.75rem",cursor:"pointer",marginBottom:9}}>
+                                        + Add Set
+                                      </button>
+                                      <button
+                                        onClick={()=>saveHistoryEdit(e.exercise, logIdx, editingHistoryEntry.sets)}
+                                        style={{width:"100%",padding:"10px",border:"none",borderRadius:9,background:"linear-gradient(135deg,#f59e0b,#ef4444)",color:"#fff",fontFamily:"Bebas Neue,sans-serif",fontSize:"1rem",letterSpacing:"0.07em",cursor:"pointer"}}>
+                                        Save Changes ✓
+                                      </button>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+
+                        {/* Delete confirm */}
+                        {confirmDeleteSession===key && (
+                          <div style={{background:"#1a0a0a",border:"1px solid #ef444433",borderRadius:10,padding:"12px 14px",marginTop:6}}>
+                            <div style={{fontSize:"0.82rem",color:"#ef4444aa",fontWeight:600,marginBottom:10}}>Delete this entire session? This can't be undone.</div>
+                            <div style={{display:"flex",gap:8}}>
+                              <button onClick={()=>deleteFullSession(key)}
+                                style={{flex:1,padding:"9px",background:"#ef444422",border:"1px solid #ef444444",borderRadius:9,color:"#ef4444",fontWeight:700,fontSize:"0.82rem",cursor:"pointer",fontFamily:"DM Sans,sans-serif"}}>
+                                Yes, Delete
+                              </button>
+                              <button onClick={()=>setConfirmDeleteSession(null)}
+                                style={{flex:1,padding:"9px",background:"#14141f",border:"1px solid #252538",borderRadius:9,color:"#8888aa",fontWeight:700,fontSize:"0.82rem",cursor:"pointer",fontFamily:"DM Sans,sans-serif"}}>
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })
+              )}
+
+              {/* ── BY EXERCISE ── */}
+              {historyView==="exercises" && (
+                <>
+                  <div className="filter-scroll">
+                    {["All",...ALL_GROUPS].map(g=>(
+                      <button key={g} className={`filter-chip${historyFilter===g?" active":""}`} onClick={()=>setHistoryFilter(g)}>
+                        {g==="All"?"All":`${MUSCLE_GROUPS[g].icon} ${g}`}
+                      </button>
+                    ))}
+                  </div>
+                  {filteredHistory.length===0
+                    ? <div className="empty">No sessions yet.<br/>Build your first session! 💪</div>
+                    : filteredHistory.map((entry,i)=>{
+                      const vs=(entry.sets||[]).filter(s=>s.weight&&s.reps);
+                      const best=vs.length>0?Math.max(...vs.map(s=>parseFloat(s.weight)*(1+parseInt(s.reps)/30))):0;
+                      const isPR=best>0&&prs[entry.exercise]&&Math.abs(best-prs[entry.exercise])<.01;
+                      return (
+                        <div className="h-card" key={i}>
+                          <div className="h-name">{entry.exercise}{isPR&&<span className="pr-badge">PR 🔥</span>}</div>
+                          <div className="h-meta">
+                            <span>{entry.date}</span>
+                            <span>{MUSCLE_GROUPS[entry.muscleGroup]?.icon} {entry.muscleGroup}</span>
+                            {entry.sessionTitle&&<span style={{color:"#aaaacc",fontWeight:600}}>{entry.sessionTitle}</span>}
+                            {entry.program&&<span className="h-prog-tag">📋 {entry.program}</span>}
+                            <span>{entry.sets?.length} sets</span>
+                          </div>
+                          <div className="h-sets">{(entry.sets||[]).map((s,j)=><div className="h-chip" key={j}><strong>{s.reps}</strong> × <strong>{s.weight}</strong>lbs</div>)}</div>
+                        </div>
+                      );
+                    })
+                  }
+                </>
+              )}
+            </div>
+          );
+        })()}
+
+        {/* ── PRs ── */}
+        {screen==="prs" && (
+          <div className="section">
+            {prEntries.length===0 ? <div className="empty">No PRs yet.<br/>Complete a session to start tracking! 🏋️</div>
+              : ALL_GROUPS.map(group=>{
+                const gPRs=prEntries.filter(([ex])=>getMG(ex)===group);
+                if(!gPRs.length) return null;
+                return (
+                  <div key={group}>
+                    <div className="pr-sec-label">{MUSCLE_GROUPS[group].icon} {group}</div>
+                    {gPRs.map(([ex,val])=>{
+                      const isOpen = prGraphEx === ex;
+                      const hist   = prHistory[ex] || [];
+                      // Build graph points
+                      const W=320, H=110, PAD=10;
+                      const vals = hist.map(p=>p.oneRM);
+                      const minV = vals.length>1 ? Math.min(...vals) : 0;
+                      const maxV = vals.length>1 ? Math.max(...vals) : val;
+                      const range = maxV - minV || 1;
+                      const pts = hist.map((p,i)=>{
+                        const x = PAD + (i/(Math.max(hist.length-1,1)))*(W-PAD*2);
+                        const y = PAD + (1-(p.oneRM-minV)/range)*(H-PAD*2);
+                        return {x,y,oneRM:p.oneRM,date:p.date,failure:p.wentToFailure};
+                      });
+                      const pathD = pts.length>1
+                        ? "M"+pts.map(p=>`${p.x},${p.y}`).join(" L")
+                        : null;
+
+                      return (
+                        <div key={ex} style={{marginBottom:8}}>
+                          <div className="pr-card" onClick={()=>setPrGraphEx(isOpen?null:ex)} style={{cursor:"pointer",borderRadius:isOpen?"13px 13px 0 0":13}}>
+                            <div>
+                              <div className="pr-name">{ex}</div>
+                              <div className="pr-sub">{hist.length>0?`${hist.length} data point${hist.length>1?"s":""}  · tap for graph`:"Est. 1-Rep Max · tap for graph"}</div>
+                            </div>
+                            <div style={{display:"flex",alignItems:"center",gap:10}}>
+                              <div style={{textAlign:"right"}}>
+                                <div className="pr-val">{val.toFixed(1)}</div>
+                                <div className="pr-sub">lbs</div>
+                              </div>
+                              <div style={{color:"#7777aa",fontSize:"0.8rem"}}>{isOpen?"▲":"▼"}</div>
+                            </div>
+                          </div>
+
+                          {isOpen && (
+                            <div style={{background:"#0e0e14",border:"1px solid #f59e0b1c",borderTop:"none",borderRadius:"0 0 13px 13px",padding:"14px 15px 16px"}}>
+                              {hist.length < 2 ? (
+                                <div style={{textAlign:"center",color:"#44447a",fontSize:"0.82rem",padding:"12px 0"}}>
+                                  Need at least 2 data points to show a graph.<br/>
+                                  <span style={{fontSize:"0.72rem",color:"#33335a"}}>Answer the failure question after sets to log 1RM data.</span>
+                                </div>
+                              ) : (
+                                <>
+                                  <div style={{fontSize:"0.62rem",fontWeight:700,color:"#f59e0b88",textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:8}}>Estimated 1RM Over Time</div>
+                                  <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{overflow:"visible"}}>
+                                    {/* Grid lines */}
+                                    {[0,.5,1].map(t=>{
+                                      const y=PAD+(1-t)*(H-PAD*2);
+                                      const v=minV+t*range;
+                                      return <g key={t}>
+                                        <line x1={PAD} y1={y} x2={W-PAD} y2={y} stroke="#1e1e2e" strokeWidth="1"/>
+                                        <text x={PAD} y={y-3} fill="#44447a" fontSize="8" fontFamily="DM Sans,sans-serif">{v.toFixed(0)}lbs</text>
+                                      </g>;
+                                    })}
+                                    {/* Line */}
+                                    {pathD && <path d={pathD} fill="none" stroke="#f59e0b" strokeWidth="2" strokeLinejoin="round"/>}
+                                    {/* Area fill */}
+                                    {pathD && pts.length>1 && (
+                                      <path d={pathD+` L${pts[pts.length-1].x},${H-PAD} L${pts[0].x},${H-PAD} Z`}
+                                        fill="url(#prGrad)" opacity="0.18"/>
+                                    )}
+                                    <defs>
+                                      <linearGradient id="prGrad" x1="0" y1="0" x2="0" y2="1">
+                                        <stop offset="0%" stopColor="#f59e0b"/>
+                                        <stop offset="100%" stopColor="#f59e0b" stopOpacity="0"/>
+                                      </linearGradient>
+                                    </defs>
+                                    {/* Data points */}
+                                    {pts.map((p,i)=>(
+                                      <g key={i}>
+                                        <circle cx={p.x} cy={p.y} r="4" fill={p.failure?"#f59e0b":"#ef4444"} stroke="#080810" strokeWidth="1.5"/>
+                                        {i===pts.length-1 && (
+                                          <text x={p.x} y={p.y-8} fill="#f59e0b" fontSize="9" textAnchor="middle" fontFamily="DM Sans,sans-serif" fontWeight="700">{p.oneRM}lbs</text>
+                                        )}
+                                      </g>
+                                    ))}
+                                  </svg>
+                                  {/* X axis dates */}
+                                  <div style={{display:"flex",justifyContent:"space-between",marginTop:4,fontSize:"0.6rem",color:"#44447a"}}>
+                                    <span>{hist[0].date}</span>
+                                    <span>{hist[hist.length-1].date}</span>
+                                  </div>
+                                  <div style={{display:"flex",gap:14,marginTop:10,fontSize:"0.65rem",color:"#7777aa"}}>
+                                    <span><span style={{color:"#f59e0b"}}>●</span> To failure</span>
+                                    <span><span style={{color:"#ef4444"}}>●</span> Estimated</span>
+                                  </div>
+                                  {/* Recent data points */}
+                                  <div style={{marginTop:12,display:"flex",flexDirection:"column",gap:5}}>
+                                    {[...hist].reverse().slice(0,5).map((p,i)=>(
+                                      <div key={i} style={{display:"flex",justifyContent:"space-between",fontSize:"0.72rem",color:"#7777aa",padding:"4px 0",borderBottom:"1px solid #1a1a28"}}>
+                                        <span>{p.date}</span>
+                                        <span style={{color:"#f59e0b",fontWeight:700}}>{p.oneRM} lbs {p.wentToFailure?"🔥":""}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })}
+          </div>
+        )}
+
+        {/* ── DATA ── */}
+        {screen==="data" && (
+          <div className="section" style={{paddingTop:8}}>
+            <div style={{background:"#0e0e1c",borderRadius:16,padding:"18px 16px",marginBottom:12,border:"1px solid #18182c"}}>
+              <div style={{fontSize:"0.62rem",fontWeight:700,letterSpacing:"0.12em",textTransform:"uppercase",color:"#3a3a58",marginBottom:6}}>Backup Your Data</div>
+              <div style={{fontSize:"0.82rem",color:"#44445a",lineHeight:1.6,marginBottom:14}}>
+                Downloads a JSON file with all your workout logs, PRs, programs, and custom exercises. Keep this somewhere safe — iCloud, email, Notes, anywhere.
+              </div>
+              <div style={{display:"flex",gap:10,marginBottom:10,fontSize:"0.72rem",color:"#3a3a58",flexWrap:"wrap"}}>
+                <span>📋 {Object.keys(allLogs).length} exercises logged</span>
+                <span>🏆 {Object.keys(prs).length} PRs tracked</span>
+                <span>📅 {Object.values(allLogs).reduce((a,v)=>a+v.length,0)} total sessions</span>
+              </div>
+              <button onClick={exportData}
+                style={{width:"100%",padding:"14px",border:"none",borderRadius:12,background:"linear-gradient(135deg,#f59e0b,#ef4444)",color:"#fff",fontFamily:"Bebas Neue,sans-serif",fontSize:"1.15rem",letterSpacing:"0.1em",cursor:"pointer"}}>
+                ⬇ Export Backup
+              </button>
+            </div>
+
+            <div style={{background:"#0e0e1c",borderRadius:16,padding:"18px 16px",border:"1px solid #18182c"}}>
+              <div style={{fontSize:"0.62rem",fontWeight:700,letterSpacing:"0.12em",textTransform:"uppercase",color:"#3a3a58",marginBottom:6}}>Restore From Backup</div>
+              <div style={{fontSize:"0.82rem",color:"#44445a",lineHeight:1.6,marginBottom:14}}>
+                Open your backup JSON file, select all the text, and paste it below. This will overwrite your current data.
+              </div>
+
+              {!showImport ? (
+                <button onClick={()=>setShowImport(true)}
+                  style={{width:"100%",padding:"13px",border:"1.5px solid #1e1e2e",borderRadius:12,background:"#14141f",color:"#44445a",fontFamily:"Bebas Neue,sans-serif",fontSize:"1rem",letterSpacing:"0.1em",cursor:"pointer"}}>
+                  ⬆ Import Backup
+                </button>
+              ) : (
+                <>
+                  <textarea
+                    value={importText}
+                    onChange={e=>setImportText(e.target.value)}
+                    placeholder='Paste your backup JSON here...'
+                    style={{width:"100%",minHeight:120,background:"#0c0c18",border:"1.5px solid #18182c",borderRadius:11,color:"#eeeef5",fontFamily:"DM Sans,sans-serif",fontSize:"0.82rem",padding:"12px",resize:"vertical",marginBottom:10}}
+                  />
+                  {importStatus==="ok" && (
+                    <div style={{background:"#0d1a10",border:"1px solid #22c55e33",borderRadius:10,padding:"10px 14px",marginBottom:10,fontSize:"0.82rem",color:"#22c55e",fontWeight:700}}>
+                      ✓ Data restored successfully!
+                    </div>
+                  )}
+                  {importStatus==="error" && (
+                    <div style={{background:"#1a0a0a",border:"1px solid #ef444433",borderRadius:10,padding:"10px 14px",marginBottom:10,fontSize:"0.82rem",color:"#ef4444",fontWeight:700}}>
+                      ✕ Invalid backup file — check the JSON and try again.
+                    </div>
+                  )}
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:9}}>
+                    <button onClick={()=>{setShowImport(false);setImportText("");setImportStatus(null);}}
+                      style={{padding:"12px",border:"1px solid #1e1e2e",borderRadius:11,background:"#14141f",color:"#44445a",fontFamily:"DM Sans,sans-serif",fontWeight:700,fontSize:"0.82rem",cursor:"pointer"}}>
+                      Cancel
+                    </button>
+                    <button disabled={!importText.trim()} onClick={importData}
+                      style={{padding:"12px",border:"none",borderRadius:11,background:importText.trim()?"linear-gradient(135deg,#f59e0b,#ef4444)":"#14141f",color:importText.trim()?"#fff":"#2a2a40",fontFamily:"Bebas Neue,sans-serif",fontSize:"1rem",letterSpacing:"0.08em",cursor:importText.trim()?"pointer":"default"}}>
+                      Restore →
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div style={{marginTop:16,padding:"14px 16px",background:"#0a0a14",borderRadius:12,border:"1px dashed #1a1a2e"}}>
+              <div style={{fontSize:"0.65rem",color:"#28284a",lineHeight:1.7}}>
+                💡 <strong style={{color:"#3a3a58"}}>Tip:</strong> Export a backup before reinstalling the app or switching phones. Your data lives on this device only — it's not synced to the cloud.
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── EDIT EXERCISE SHEET ── */}
+        {editExIdx!==null&&session&&(()=>{
+          const ex = session.exercises[editExIdx];
+          const group = ex.group;
+          const builtIn = (MUSCLE_GROUPS[group]?.exercises || []);
+          const custom  = (customExercises[group] || []).filter(c=>!builtIn.find(b=>b.name===c.name));
+          const groupExercises = [...builtIn, ...custom];
+          return (
+            <EditExSheet
+              exercise={ex}
+              idx={editExIdx}
+              onAction={handleEditEx}
+              onClose={()=>setEditExIdx(null)}
+              groupExercises={groupExercises}
+            />
+          );
+        })()}
+
+        {/* ── PROGRAM SHEET ── */}
+        {programKey!==null&&(
+          <ProgramSheet
+            b3key={programKey}
+            existing={customPrograms[programKey]||null}
+            onSave={prog=>saveProgram(programKey,prog)}
+            onDelete={()=>deleteProgram(programKey)}
+            onClose={()=>setProgramKey(null)}
+          />
+        )}
+
+      </div>
+    </>
+  );
+}
+
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<GymTracker />);
+  </script>
+
+  <!-- Service Worker registration for offline support -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        // Inline service worker as blob
+        const swCode = `
+          const CACHE = 'ironlog-v1';
+          const ASSETS = ['/'];
+          self.addEventListener('install', e => {
+            e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)));
+          });
+          self.addEventListener('fetch', e => {
+            e.respondWith(
+              caches.match(e.request).then(r => r || fetch(e.request).catch(() => caches.match('/')))
+            );
+          });
+        `;
+        const blob = new Blob([swCode], { type: 'application/javascript' });
+        const swUrl = URL.createObjectURL(blob);
+        navigator.serviceWorker.register(swUrl);
+      });
+    }
+  </script>
+</body>
+</html>
